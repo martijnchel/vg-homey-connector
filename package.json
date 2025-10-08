@@ -1,0 +1,13 @@
+{
+  "name": "virtuagym-connector",
+  "version": "1.0.0",
+  "description": "Virtuagym to Homey Webhook Connector",
+  "main": "webhook_receiver.js",
+  "scripts": {
+    "start": "node webhook_receiver.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.8",
+    "express": "^4.19.2"
+  }
+}
