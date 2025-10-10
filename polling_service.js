@@ -178,7 +178,8 @@ async function pollVirtuagym() {
             }, newVisits[0]); // Zoek de check-in met de hoogste timestamp
 
             const memberId = latestVisit.member_id;
-            const checkinTime = latestVisit.checkin_timestamp;
+            // FIX: Gebruik de correcte API-veldnaam: check_in_timestamp
+            const checkinTime = latestVisit.check_in_timestamp;
 
             // *** NIEUW: Haal de volledige naam op ***
             const memberName = await getMemberName(memberId); 
