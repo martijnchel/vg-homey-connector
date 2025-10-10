@@ -65,6 +65,7 @@ async function pollVirtuagym() {
 
     // Nieuwe debug log om te bevestigen dat de poll start
     console.log(`--- [POLL START] Polling Virtuagym op ${new Date().toLocaleTimeString()} ---`);
+    console.log(`[DEBUG] Zoekt check-ins nieuwer dan: ${new Date(latestCheckinTimestamp).toLocaleString()}`); 
 
     try {
         // We vragen om de laatste 20 bezoeken, gesorteerd op check-in tijd (meest recent eerst).
@@ -106,7 +107,8 @@ async function pollVirtuagym() {
             latestCheckinTimestamp = newLatestTimestamp;
             console.log(`Polling complete. ${newCheckinsFound} nieuwe check-ins verwerkt. Nieuwste tijdstempel: ${latestCheckinTimestamp}`);
         } else {
-             console.log(`Polling complete. Geen nieuwe check-ins gevonden.`);
+             // AANGEPAST: Log het debug bericht duidelijker
+             console.log(`[DEBUG] Polling complete. Geen nieuwe check-ins gevonden boven tijdstempel ${new Date(latestCheckinTimestamp).toLocaleTimeString()}.`);
         }
 
 
