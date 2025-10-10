@@ -38,9 +38,17 @@ async function triggerHomeyWebhook(userId, checkinTime) {
         // De timestamp van Virtuagym is in milliseconden, dus delen door 1000 voor seconden
         const checkinTimeSeconds = Math.floor(checkinTime / 1000); 
         
-        // Stuur de user ID en de timestamp mee naar Homey
-        const url = `${HOMEY_WEBHOOK_BASE_URL}?uid=${userId}&timestamp=${checkinTimeSeconds}`;
-        console.log(`Sending request to Homey (LAATSTE CHECK-IN): ${url}`);
+        // --- AANPASSING VOOR HOMEY TAGS ---
+        // Homey herkent data alleen correct via de '?data=' parameter in de URL.
+        // We sturen een JSON-object met de uid en timestamp.
+        const payloadData = { 
+            uid: userId, 
+            timestamp: checkinTimeSeconds 
+        };
+        
+        // CODE UITLEG: We versturen de JSON string als de 'data' query parameter.
+        const url = `${HOMEY_WEBHOOK_BASE_URL}?data=${encodeURIComponent(JSON.stringify(payloadData))}`;
+        console.log(`Sending request to Homey (LAATSTE CHECK-IN) via ?data= parameter.`);
         
         const response = await axios.get(url);
         
