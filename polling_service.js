@@ -18,7 +18,8 @@ const HOMEY_WEBHOOK_BASE_URL = process.env.HOMEY_URL;
 
 // Base URL's voor de Virtuagym API's
 const VG_VISITS_BASE_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/visits`;
-const VG_MEMBER_BASE_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/members`; // NIEUWE URL voor lid-informatie
+// DEFINITIEVE CORRECTIE: Gebruik de enkelvoudsvorm '/member' zoals aangegeven in de documentatie voor detail-lookup.
+const VG_MEMBER_BASE_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/member`; 
 
 // Statusvariabele om de laatste check-in tijd bij te houden
 let latestCheckinTimestamp = Date.now(); 
@@ -79,6 +80,7 @@ async function getMemberName(memberId) {
     }
 
     try {
+        // Dit genereert nu de CORRECTE URL: .../member/{memberId}
         const memberUrl = `${VG_MEMBER_BASE_URL}/${memberId}`;
         
         const response = await axios.get(memberUrl, {
@@ -90,7 +92,7 @@ async function getMemberName(memberId) {
 
         const memberData = response.data.result;
 
-        // AANGEPAST: Gebruik 'firstname' en 'lastname' zoals in de Virtuagym documentatie
+        // Controleert op 'firstname' en 'lastname' (kleine letter, geen underscore)
         if (memberData && memberData.firstname) { 
             // Combineer voornaam en achternaam, en trim eventuele extra spaties.
             const fullName = `${memberData.firstname} ${memberData.lastname || ''}`.trim();
@@ -102,8 +104,14 @@ async function getMemberName(memberId) {
             return `Lid ${memberId}`;
         }
     } catch (error) {
-        // Als de API-aanroep faalt (404, 500, etc.), gebruik de ID.
-        console.error(`[FOUT] Kan naam niet ophalen voor Lid ID ${memberId}: ${error.message}`);
+        // Verbeterde foutafhandeling: Log de API-respons voor debugging
+        console.error(`[FOUT] Kan naam niet ophalen voor Lid ID ${memberId}.`);
+        if (error.response) {
+            console.error(`VG API Fout Status: ${error.response.status}`);
+            console.error("VG API Fout Data:", error.response.data);
+        } else {
+            console.error("Netwerk/Algemene Fout:", error.message);
+        }
         return `Lid ${memberId}`;
     }
 }
