@@ -63,6 +63,9 @@ async function pollVirtuagym() {
     if (isPolling) return; // Voorkom dat er meerdere polls tegelijkertijd lopen
     isPolling = true;
 
+    // Nieuwe debug log om te bevestigen dat de poll start
+    console.log(`--- [POLL START] Polling Virtuagym op ${new Date().toLocaleTimeString()} ---`);
+
     try {
         // We vragen om de laatste 20 bezoeken, gesorteerd op check-in tijd (meest recent eerst).
         const response = await axios.get(VG_BASE_URL, {
@@ -74,13 +77,19 @@ async function pollVirtuagym() {
                 limit: 20 // Haal genoeg resultaten op om nieuwe check-ins te vangen
             }
         });
+        
+        // Controleer of de API wel data stuurt (dit vangt 401/403 op die 200 teruggeven)
+        if (response.data.status && response.data.status.statuscode !== 200) {
+             console.error(`Fout van Virtuagym API (geen 200 OK): ${response.data.status.statuscode}. Bericht: ${response.data.status.statusmessage}`);
+             isPolling = false;
+             return;
+        }
 
         const visits = response.data.result || [];
         let newLatestTimestamp = latestCheckinTimestamp;
         let newCheckinsFound = 0;
 
         // Loop door de resultaten om nieuwe check-ins te vinden
-        // We verwerken ze van oud naar nieuw om de timestamps correct bij te werken.
         const newVisits = visits
             .filter(visit => visit.check_in_timestamp > latestCheckinTimestamp && visit.check_in_timestamp > 0)
             .sort((a, b) => a.check_in_timestamp - b.check_in_timestamp); 
@@ -97,16 +106,18 @@ async function pollVirtuagym() {
             latestCheckinTimestamp = newLatestTimestamp;
             console.log(`Polling complete. ${newCheckinsFound} nieuwe check-ins verwerkt. Nieuwste tijdstempel: ${latestCheckinTimestamp}`);
         } else {
-             // console.log(`Polling complete. Geen nieuwe check-ins gevonden.`); // Log dit minder vaak
+             console.log(`Polling complete. Geen nieuwe check-ins gevonden.`);
         }
 
 
     } catch (error) {
-        console.error("Fout bij het pollen van de Virtuagym API:");
+        // Meer gedetailleerde foutafhandeling
+        console.error("!!! KRITISCHE POLLING FOUT BIJ AANROEP VIRTUAGYM API !!!");
         if (error.response) {
-            console.error(`Status: ${error.response.status}, Data:`, error.response.data);
+            console.error(`Status: ${error.response.status}. URL: ${VG_BASE_URL}`);
+            console.error("Data:", error.response.data);
         } else {
-            console.error(error.message);
+            console.error("Netwerk/Algemene Fout:", error.message);
         }
     }
 
@@ -121,7 +132,7 @@ app.get('/', (req, res) => {
 // Start de server en de Polling Loop
 app.listen(PORT, () => {
     if (!CLUB_ID || !API_KEY || !CLUB_SECRET || !HOMEY_WEBHOOK_BASE_URL) {
-        console.error("\n!!! KRITISCHE FOUT: AUTHENTICATIEVARIABELEN ONTBREEKEN !!!");
+        console.error("\n!!! KRITISCHE FOUT: AUTHENTICATIEVARIABELEN ONTBREEKEN BIJ START !!!");
         console.error("Zorg ervoor dat CLUB_ID, API_KEY, CLUB_SECRET en HOMEY_URL zijn ingesteld in de Railway variabelen.");
         // Beëindig het proces om een crash te forceren als de basisgegevens ontbreken
         process.exit(1);
