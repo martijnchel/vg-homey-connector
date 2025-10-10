@@ -135,4 +135,15 @@ app.get('/', (req, res) => {
 
 // Start de server en de Polling Loop
 app.listen(PORT, () => {
-    if (!CLUB_ID
+    if (!CLUB_ID || !API_KEY || !CLUB_SECRET || !HOMEY_WEBHOOK_BASE_URL) {
+        console.error("\n!!! KRITISCHE FOUT: AUTHENTICATIEVARIABELEN ONTBREEKEN BIJ START !!!");
+        console.error("Zorg ervoor dat CLUB_ID, API_KEY, CLUB_SECRET en HOMEY_URL zijn ingesteld in de Railway variabelen.");
+        // Beëindig het proces om een crash te forceren als de basisgegevens ontbreken
+        process.exit(1);
+    }
+    console.log(`Virtuagym Polling Service luistert op poort ${PORT}. Polling interval: ${POLLING_INTERVAL_MS / 60000} minuten.`);
+    
+    // Start de polling loop onmiddellijk en herhaal elke 2,5 minuten
+    setInterval(pollVirtuagym, POLLING_INTERVAL_MS);
+    pollVirtuagym(); // Eerste aanroep direct starten
+});
