@@ -8,7 +8,7 @@ const app = express();
 
 // Gebruik de PORT die door de hostingomgeving (Railway) wordt geleverd
 const PORT = process.env.PORT || 3000;
-const POLLING_INTERVAL_MS = 300000; // Poll elke 5 minuten (300.000 ms)
+const POLLING_INTERVAL_MS = 150000; // Poll elke 2,5 minuten (150.000 ms)
 
 // Configuratie via Omgevingsvariabelen (MOETEN in Railway worden ingesteld!)
 const CLUB_ID = process.env.CLUB_ID;
@@ -40,7 +40,7 @@ async function triggerHomeyWebhook(userId, checkinTime) {
         
         // Stuur de user ID en de timestamp mee naar Homey
         const url = `${HOMEY_WEBHOOK_BASE_URL}?uid=${userId}&timestamp=${checkinTimeSeconds}`;
-        console.log(`Sending request to Homey: ${url}`);
+        console.log(`Sending request to Homey (LAATSTE CHECK-IN): ${url}`);
         
         const response = await axios.get(url);
         
@@ -68,14 +68,12 @@ async function pollVirtuagym() {
     console.log(`[DEBUG] Zoekt check-ins nieuwer dan: ${new Date(latestCheckinTimestamp).toLocaleString()}`); 
 
     try {
-        // We vragen om de laatste 20 bezoeken, gesorteerd op check-in tijd (meest recent eerst).
+        // We gebruiken de sync_from parameter om ALLE nieuwe bezoeken op te halen
         const response = await axios.get(VG_BASE_URL, {
             params: {
                 api_key: API_KEY,
                 club_secret: CLUB_SECRET,
-                sort_by: 'check_in_timestamp',
-                sort_direction: 'desc',
-                limit: 20 // Haal genoeg resultaten op om nieuwe check-ins te vangen
+                sync_from: latestCheckinTimestamp // Haal ALLE bezoeken op nieuwer dan deze tijdstempel
             }
         });
         
@@ -88,26 +86,30 @@ async function pollVirtuagym() {
 
         const visits = response.data.result || [];
         let newLatestTimestamp = latestCheckinTimestamp;
-        let newCheckinsFound = 0;
+        let latestVisit = null;
 
-        // Loop door de resultaten om nieuwe check-ins te vinden
+        // 1. Filter om alle NIEUWE bezoeken te vinden (nieuwere timestamp dan de laatste verwerkte)
         const newVisits = visits
-            .filter(visit => visit.check_in_timestamp > latestCheckinTimestamp && visit.check_in_timestamp > 0)
-            .sort((a, b) => a.check_in_timestamp - b.check_in_timestamp); 
+            .filter(visit => visit.check_in_timestamp > latestCheckinTimestamp && visit.check_in_timestamp > 0);
 
-        for (const visit of newVisits) {
-            console.log(`[NIEUWE CHECK-IN]: User ${visit.member_id} at ${new Date(visit.check_in_timestamp).toISOString()}`);
-            await triggerHomeyWebhook(visit.member_id, visit.check_in_timestamp);
-            newLatestTimestamp = Math.max(newLatestTimestamp, visit.check_in_timestamp);
-            newCheckinsFound++;
-        }
+        if (newVisits.length > 0) {
+            // 2. Vind de ECHTE meest recente check-in (de laatste van de batch)
+            latestVisit = newVisits.reduce((latest, current) => {
+                return current.check_in_timestamp > latest.check_in_timestamp ? current : latest;
+            }, newVisits[0]); // Zoek de check-in met de hoogste timestamp
 
-        if (newCheckinsFound > 0) {
-             // Werk de globale tijdstempel bij nadat alle nieuwe bezoeken zijn verwerkt
-            latestCheckinTimestamp = newLatestTimestamp;
-            console.log(`Polling complete. ${newCheckinsFound} nieuwe check-ins verwerkt. Nieuwste tijdstempel: ${latestCheckinTimestamp}`);
+            // 3. Verwerk ALLEEN de meest recente check-in
+            console.log(`[LAATSTE NIEUWE CHECK-IN]: User ${latestVisit.member_id} at ${new Date(latestVisit.check_in_timestamp).toISOString()}`);
+            await triggerHomeyWebhook(latestVisit.member_id, latestVisit.check_in_timestamp);
+            
+            // 4. Update de globale tijdstempel naar de tijd van deze laatste check-in.
+            // Dit voorkomt dat we deze of oudere check-ins in de volgende poll nogmaals verwerken.
+            latestCheckinTimestamp = latestVisit.check_in_timestamp;
+            
+            console.log(`Polling complete. De LAATSTE check-in verwerkt. Nieuwste tijdstempel: ${latestCheckinTimestamp}`);
+            
         } else {
-             // AANGEPAST: Log het debug bericht duidelijker
+             // Log het debug bericht duidelijker
              console.log(`[DEBUG] Polling complete. Geen nieuwe check-ins gevonden boven tijdstempel ${new Date(latestCheckinTimestamp).toLocaleTimeString()}.`);
         }
 
@@ -128,20 +130,9 @@ async function pollVirtuagym() {
 
 // Een simpel GET-endpoint voor het testen van de server connectie
 app.get('/', (req, res) => {
-    res.send('Virtuagym-Homey Polling Connector is running and polling every 5 minutes.');
+    res.send('Virtuagym-Homey Polling Connector is running and polling every 2.5 minutes.');
 });
 
 // Start de server en de Polling Loop
 app.listen(PORT, () => {
-    if (!CLUB_ID || !API_KEY || !CLUB_SECRET || !HOMEY_WEBHOOK_BASE_URL) {
-        console.error("\n!!! KRITISCHE FOUT: AUTHENTICATIEVARIABELEN ONTBREEKEN BIJ START !!!");
-        console.error("Zorg ervoor dat CLUB_ID, API_KEY, CLUB_SECRET en HOMEY_URL zijn ingesteld in de Railway variabelen.");
-        // Beëindig het proces om een crash te forceren als de basisgegevens ontbreken
-        process.exit(1);
-    }
-    console.log(`Virtuagym Polling Service luistert op poort ${PORT}. Polling interval: ${POLLING_INTERVAL_MS / 60000} minuten.`);
-    
-    // Start de polling loop onmiddellijk en herhaal elke 5 minuten
-    setInterval(pollVirtuagym, POLLING_INTERVAL_MS);
-    pollVirtuagym(); // Eerste aanroep direct starten
-});
+    if (!CLUB_ID
