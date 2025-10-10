@@ -38,14 +38,13 @@ async function triggerHomeyWebhook(userId, checkinTime) {
         // De timestamp van Virtuagym is in milliseconden, dus delen door 1000 voor seconden
         const checkinTimeSeconds = Math.floor(checkinTime / 1000); 
         
-        // --- AANPASSING VOOR HOMEY TAGS (SIMPELE MANIER) ---
-        // Homey herkent simpele data het beste via directe query parameters.
-        // We gebruiken 'tag_uid' en 'tag_timestamp' om de tags betrouwbaar beschikbaar te maken.
-        const uidParam = `tag_uid=${userId}`;
-        const timestampParam = `tag_timestamp=${checkinTimeSeconds}`;
+        // --- AANPASSING VOOR HOMEY TAGS (ABSOLUUT SIMPELSTE MANIER) ---
+        // We gebruiken 'uid' en 'timestamp' om de tags betrouwbaar beschikbaar te maken.
+        const uidParam = `uid=${userId}`;
+        const timestampParam = `timestamp=${checkinTimeSeconds}`;
         
         // CODE UITLEG: We versturen de parameters direct in de URL query.
-        // De tags zullen beschikbaar zijn als ${$webhook.tag_uid} en ${$webhook.tag_timestamp}.
+        // De tags zullen nu beschikbaar zijn als ${$webhook.uid} en ${$webhook.timestamp}.
         const url = `${HOMEY_WEBHOOK_BASE_URL}?${uidParam}&${timestampParam}`;
         console.log(`Sending request to Homey (LAATSTE CHECK-IN) via directe tags: ${url}`);
         
@@ -102,12 +101,12 @@ async function pollVirtuagym() {
         if (newVisits.length > 0) {
             // 2. Vind de ECHTE meest recente check-in (de laatste van de batch)
             latestVisit = newVisits.reduce((latest, current) => {
-                return current.check_in_timestamp > latest.check_in_timestamp ? current : latest;
+                return current.check_in_timestamp > latest.checkin_timestamp ? current : latest;
             }, newVisits[0]); // Zoek de check-in met de hoogste timestamp
 
             // 3. Verwerk ALLEEN de meest recente check-in
             console.log(`[LAATSTE NIEUWE CHECK-IN]: User ${latestVisit.member_id} at ${new Date(latestVisit.check_in_timestamp).toISOString()}`);
-            await triggerHomeyWebhook(latestVisit.member_id, latestVisit.check_in_timestamp);
+            await triggerHomeyWebhook(latestVisit.member_id, latestVisit.checkin_timestamp);
             
             // 4. Update de globale tijdstempel naar de tijd van deze laatste check-in.
             // Dit voorkomt dat we deze of oudere check-ins in de volgende poll nogmaals verwerken.
