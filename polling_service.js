@@ -41,17 +41,22 @@ async function triggerHomeyWebhook(userName, checkinTime) {
         
         const checkinDate = new Date(checkinTime);
         
+        // ** FIX VOOR TIJDZONE **: Forceer de 'Europe/Amsterdam' tijdzone
+        const timezoneOptions = { timeZone: 'Europe/Amsterdam' };
+        
         // 1a. Formatteer de datum (bijv. "10 oktober")
         const formattedDate = checkinDate.toLocaleDateString('nl-NL', { 
             day: 'numeric', 
-            month: 'long' // Gebruik lange maandnaam
+            month: 'long', // Gebruik lange maandnaam
+            ...timezoneOptions
         });
 
         // 1b. Formatteer alleen de tijd (bijv. "22:37:00")
         const formattedTimeOnly = checkinDate.toLocaleTimeString('nl-NL', { 
             hour: '2-digit', 
             minute: '2-digit', 
-            second: '2-digit' 
+            second: '2-digit',
+            ...timezoneOptions
         });
 
         // 2. Combineer de Naam, datum en tijd tot één enkele bericht-string
@@ -173,7 +178,7 @@ async function pollVirtuagym() {
             }, newVisits[0]); // Zoek de check-in met de hoogste timestamp
 
             const memberId = latestVisit.member_id;
-            const checkinTime = latestVisit.check_in_timestamp;
+            const checkinTime = latestVisit.checkin_timestamp;
 
             // *** NIEUW: Haal de volledige naam op ***
             const memberName = await getMemberName(memberId); 
