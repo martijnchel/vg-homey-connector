@@ -38,17 +38,16 @@ async function triggerHomeyWebhook(userId, checkinTime) {
         // De timestamp van Virtuagym is in milliseconden, dus delen door 1000 voor seconden
         const checkinTimeSeconds = Math.floor(checkinTime / 1000); 
         
-        // --- AANPASSING VOOR HOMEY TAGS ---
-        // Homey herkent data alleen correct via de '?data=' parameter in de URL.
-        // We sturen een JSON-object met de uid en timestamp.
-        const payloadData = { 
-            uid: userId, 
-            timestamp: checkinTimeSeconds 
-        };
+        // --- AANPASSING VOOR HOMEY TAGS (SIMPELE MANIER) ---
+        // Homey herkent simpele data het beste via directe query parameters.
+        // We gebruiken 'tag_uid' en 'tag_timestamp' om de tags betrouwbaar beschikbaar te maken.
+        const uidParam = `tag_uid=${userId}`;
+        const timestampParam = `tag_timestamp=${checkinTimeSeconds}`;
         
-        // CODE UITLEG: We versturen de JSON string als de 'data' query parameter.
-        const url = `${HOMEY_WEBHOOK_BASE_URL}?data=${encodeURIComponent(JSON.stringify(payloadData))}`;
-        console.log(`Sending request to Homey (LAATSTE CHECK-IN) via ?data= parameter.`);
+        // CODE UITLEG: We versturen de parameters direct in de URL query.
+        // De tags zullen beschikbaar zijn als ${$webhook.tag_uid} en ${$webhook.tag_timestamp}.
+        const url = `${HOMEY_WEBHOOK_BASE_URL}?${uidParam}&${timestampParam}`;
+        console.log(`Sending request to Homey (LAATSTE CHECK-IN) via directe tags: ${url}`);
         
         const response = await axios.get(url);
         
