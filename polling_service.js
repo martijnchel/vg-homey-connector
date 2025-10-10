@@ -35,19 +35,31 @@ async function triggerHomeyWebhook(userId, checkinTime) {
     }
 
     try {
-        // De timestamp van Virtuagym is in milliseconden, dus delen door 1000 voor seconden
-        const checkinTimeSeconds = Math.floor(checkinTime / 1000); 
+        // --- DE DEFINITIEVE OPLOSSING VOOR HOMEY TAGS ---
         
-        // --- AANPASSING VOOR HOMEY TAGS (ABSOLUUT SIMPELSTE MANIER) ---
-        // We gebruiken 'uid' en 'timestamp' om de tags betrouwbaar beschikbaar te maken.
-        const uidParam = `uid=${userId}`;
-        const timestampParam = `timestamp=${checkinTimeSeconds}`;
+        // 1. Converteer de Virtuagym tijd (milliseconden) naar een leesbare, Nederlandse string
+        const checkinDate = new Date(checkinTime);
+        const formattedTime = checkinDate.toLocaleString('nl-NL', { 
+            hour: '2-digit', 
+            minute: '2-digit', 
+            second: '2-digit', 
+            day: 'numeric', 
+            month: 'short' 
+        });
+
+        // 2. Combineer de UID en de geformatteerde tijd tot één enkele bericht-string
+        const tagValue = `Lid ${userId} checkte in om ${formattedTime}`;
+
+        // Zorg ervoor dat de Homey URL geen query-parameters bevat.
+        // We voegen nu alleen onze enkelvoudige 'tag' parameter toe.
+        const baseUrlClean = HOMEY_WEBHOOK_BASE_URL.split('?')[0];
+
+        // 3. Bouw de uiteindelijke GET URL en encode de tag-waarde
+        const url = `${baseUrlClean}?tag=${encodeURIComponent(tagValue)}`;
         
-        // CODE UITLEG: We versturen de parameters direct in de URL query.
-        // De tags zullen nu beschikbaar zijn als ${$webhook.uid} en ${$webhook.timestamp}.
-        const url = `${HOMEY_WEBHOOK_BASE_URL}?${uidParam}&${timestampParam}`;
-        console.log(`Sending request to Homey (LAATSTE CHECK-IN) via directe tags: ${url}`);
+        console.log(`Sending GET request to Homey (LAATSTE CHECK-IN) with single 'tag' parameter.`);
         
+        // Gebruik axios.get om de data te versturen
         const response = await axios.get(url);
         
         console.log(`Homey Webhook successful. Status: ${response.status}`);
