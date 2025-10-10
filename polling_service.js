@@ -101,12 +101,14 @@ async function pollVirtuagym() {
         if (newVisits.length > 0) {
             // 2. Vind de ECHTE meest recente check-in (de laatste van de batch)
             latestVisit = newVisits.reduce((latest, current) => {
-                return current.check_in_timestamp > latest.checkin_timestamp ? current : latest;
+                // FIX: Gebruik de correcte property name: check_in_timestamp
+                return current.check_in_timestamp > latest.check_in_timestamp ? current : latest;
             }, newVisits[0]); // Zoek de check-in met de hoogste timestamp
 
             // 3. Verwerk ALLEEN de meest recente check-in
             console.log(`[LAATSTE NIEUWE CHECK-IN]: User ${latestVisit.member_id} at ${new Date(latestVisit.check_in_timestamp).toISOString()}`);
-            await triggerHomeyWebhook(latestVisit.member_id, latestVisit.checkin_timestamp);
+            // FIX: Gebruik de correcte property name: check_in_timestamp
+            await triggerHomeyWebhook(latestVisit.member_id, latestVisit.check_in_timestamp);
             
             // 4. Update de globale tijdstempel naar de tijd van deze laatste check-in.
             // Dit voorkomt dat we deze of oudere check-ins in de volgende poll nogmaals verwerken.
