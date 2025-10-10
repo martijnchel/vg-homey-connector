@@ -1,10 +1,10 @@
 {
   "name": "virtuagym-connector",
   "version": "1.0.0",
-  "description": "Virtuagym to Homey Webhook Connector",
-  "main": "webhook_receiver.js",
+  "description": "Virtuagym to Homey Polling Connector",
+  "main": "polling_service.js",
   "scripts": {
-    "start": "node webhook_receiver.js"
+    "start": "node polling_service.js"
   },
   "dependencies": {
     "axios": "^1.6.8",
