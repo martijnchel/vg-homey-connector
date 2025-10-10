@@ -90,8 +90,13 @@ async function getMemberName(memberId) {
             }
         });
 
-        const memberData = response.data.result;
-
+        // *** AANPASSING HIER ***
+        // Controleer of het resultaat een array is (typisch als de API de lijst-structuur gebruikt, zelfs voor één lid)
+        let memberData = response.data.result;
+        if (Array.isArray(memberData) && memberData.length > 0) {
+            memberData = memberData[0]; // Pak het eerste element uit de array
+        }
+        
         // Controleert op 'firstname' en 'lastname' (kleine letter, geen underscore)
         if (memberData && memberData.firstname) { 
             // Combineer voornaam en achternaam, en trim eventuele extra spaties.
