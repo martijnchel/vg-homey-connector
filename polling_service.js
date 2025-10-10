@@ -37,20 +37,26 @@ async function triggerHomeyWebhook(userName, checkinTime) {
     }
 
     try {
-        // --- DE DEFINITIEVE OPLOSSING VOOR HOMEY TAGS ---
+        // --- AANGEPAST VOOR HOMEY TAGS: Datum en tijd gesplitst en nieuwe zinsnede gebruikt ---
         
-        // 1. Converteer de Virtuagym tijd (milliseconden) naar een leesbare, Nederlandse string
         const checkinDate = new Date(checkinTime);
-        const formattedTime = checkinDate.toLocaleString('nl-NL', { 
-            hour: '2-digit', 
-            minute: '2-digit', 
-            second: '2-digit', 
+        
+        // 1a. Formatteer de datum (bijv. "10 oktober")
+        const formattedDate = checkinDate.toLocaleDateString('nl-NL', { 
             day: 'numeric', 
-            month: 'short' 
+            month: 'long' // Gebruik lange maandnaam
         });
 
-        // 2. Combineer de Naam en de geformatteerde tijd tot één enkele bericht-string
-        const tagValue = `${userName} checkte in om ${formattedTime}`; // Gebruikt nu de Naam
+        // 1b. Formatteer alleen de tijd (bijv. "22:37:00")
+        const formattedTimeOnly = checkinDate.toLocaleTimeString('nl-NL', { 
+            hour: '2-digit', 
+            minute: '2-digit', 
+            second: '2-digit' 
+        });
+
+        // 2. Combineer de Naam, datum en tijd tot één enkele bericht-string
+        // Voorbeeld: "Jan Jansen checkte in op 10 oktober, om 22:37:00"
+        const tagValue = `${userName} checkte in op ${formattedDate}, om ${formattedTimeOnly}`;
         
         // Zorg ervoor dat de Homey URL geen query-parameters bevat.
         const baseUrlClean = HOMEY_WEBHOOK_BASE_URL.split('?')[0];
