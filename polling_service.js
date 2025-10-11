@@ -67,24 +67,26 @@ function getStartOfTodayUtc() {
  */
 async function triggerHomeyDailyTotalWebhook(totalCount, isTest = false) {
     if (!HOMEY_DAILY_TOTAL_URL) {
+        console.error("Fout: HOMEY_DAILY_TOTAL_URL omgevingsvariabele is niet ingesteld.");
         return; 
     }
 
     try {
-        const dateString = new Date().toLocaleDateString('nl-NL', { 
-            day: 'numeric', 
-            month: 'long', 
-            timeZone: 'Europe/Amsterdam' 
-        });
-        
-        // Voeg [TEST] toe aan de tag als het een test is
-        const testPrefix = isTest ? '[TEST] ' : '';
-
-        const tagValue = `${testPrefix}Totaal vandaag (${dateString}): ${totalCount} check-ins`;
         const baseUrlClean = HOMEY_DAILY_TOTAL_URL.split('?')[0];
+        
+        // DE DEFINITIEVE OPLOSSING: Maak een simpele, leesbare tekst in plaats van JSON of aparte parameters.
+        let tagValue = `Vandaag zijn er ${totalCount} leden ingecheckt.`;
+
+        // Voeg een [TEST] prefix toe als het een testrun is. Dit maakt het onderscheid makkelijk in Homey.
+        if (isTest) {
+            tagValue = `[TEST] ${tagValue}`;
+        }
+        
+        // Encodeer de simpele string en verstuur als 'tag', identiek aan de individuele check-in.
         const url = `${baseUrlClean}?tag=${encodeURIComponent(tagValue)}`;
         
-        console.log(`Sending GET request to Homey (DAGELIJKS TOTAAL) met bericht: "${tagValue}"`);
+        console.log(`[DEBUG] Homey DAGELIJKS TOTAAL URL (Volledig): ${url}`);
+        console.log(`Sending GET request to Homey (DAGELIJKS TOTAAL) met tag (tekst): ${tagValue}`);
         
         const response = await axios.get(url);
         
@@ -97,6 +99,10 @@ async function triggerHomeyDailyTotalWebhook(totalCount, isTest = false) {
         
     } catch (error) {
         console.error("Fout bij aanroepen Homey Dagelijkse Totalen Webhook:", error.message);
+        if (error.response) {
+            // Dit zou nu de 400 Bad Request fout moeten oplossen
+            console.error(`Homey Call Fout Status: ${error.response.status}. Zorg ervoor dat de HOMEY_DAILY_TOTAL_URL correct is ingesteld.`);
+        }
     }
 }
 
@@ -169,6 +175,7 @@ async function triggerHomeyIndividualWebhook(userName, checkinTime) {
             ...timezoneOptions
         });
 
+        // De oorspronkelijke, werkende implementatie met de lange tekst als 'tag'
         const tagValue = `${userName} checkte in op ${formattedDate}, om ${formattedTimeOnly}`;
         
         const baseUrlClean = HOMEY_INDIVIDUAL_URL.split('?')[0];
@@ -296,7 +303,7 @@ async function pollVirtuagym() {
 
         if (newVisits.length > 0) {
             const latestVisit = newVisits.reduce((latest, current) => {
-                return current.check_in_timestamp > latest.check_in_timestamp ? current : latest;
+                return current.check_in_timestamp > latest.checkin_time ? current : latest;
             }, newVisits[0]); 
 
             const memberId = latestVisit.member_id;
@@ -366,7 +373,7 @@ app.listen(PORT, () => {
     setInterval(pollVirtuagym, POLLING_INTERVAL_MS);
     pollVirtuagym(); // Eerste aanroep direct starten
     
-    // Start de DAGELIJKSE TOTALEN scheduler (elke 60 seconden om 23:59 te vangen)
+    // Start de DAGELIJKS TOTALEN scheduler (elke 60 seconden om 23:59 te vangen)
     setInterval(checkDailySchedule, DAILY_CHECK_INTERVAL_MS);
     checkDailySchedule(); // Eerste aanroep direct starten
     
