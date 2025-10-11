@@ -203,6 +203,7 @@ async function triggerHomeyIndividualWebhook(userName, checkinTime) {
 
 /**
  * Haalt het totale aantal check-ins op voor de huidige dag en triggert de Homey webhook.
+ * Nu gefilterd op unieke leden (dubbele check-ins worden genegeerd).
  * @param {boolean} isTest - Geeft aan of deze oproep afkomstig is van de test-endpoint.
  */
 async function sendDailyTotal(isTest = false) {
@@ -219,18 +220,30 @@ async function sendDailyTotal(isTest = false) {
                 club_secret: CLUB_SECRET,
                 sync_from: startOfTodayUtc, 
                 sync_to: nowUtc,
-                limit: 1000 
+                limit: 1000 // Zorg ervoor dat er voldoende limiet is om alle bezoeken op te halen
             }
         });
         
         const visitsResult = responseTotal.data.result;
         let totalCount = 0;
-        if (Array.isArray(visitsResult)) {
-            totalCount = visitsResult.length;
+
+        if (Array.isArray(visitsResult) && visitsResult.length > 0) {
+            const uniqueMemberIds = new Set();
+            
+            // Loop door alle bezoeken en voeg de member_id toe aan de Set
+            visitsResult.forEach(visit => {
+                // Alleen de member_id's gebruiken (dit is de filtering)
+                if (visit.member_id) {
+                    uniqueMemberIds.add(visit.member_id);
+                }
+            });
+
+            // De grootte van de Set is het aantal unieke leden
+            totalCount = uniqueMemberIds.size;
         }
 
         if (totalCount >= 0) { 
-            console.log(`[DAILY TOTAL]: Totaal aantal check-ins vandaag (gevonden): ${totalCount}`);
+            console.log(`[DAILY TOTAL]: Totaal aantal UNIEKE check-ins vandaag (gevonden): ${totalCount}`);
             await triggerHomeyDailyTotalWebhook(totalCount, isTest);
         } else {
              console.warn("[WAARSCHUWING] Onverwachte data structuur voor dagelijks totaal.");
@@ -308,7 +321,7 @@ async function pollVirtuagym() {
             }, newVisits[0]); 
 
             const memberId = latestVisit.member_id;
-            const latestCheckinTs = latestVisit.check_in_timestamp;
+            const latestCheckinTs = latestVisit.checkin_time; // Gebruik de check_in_timestamp van de laatste bezoeker
 
             const memberName = await getMemberName(memberId); 
             
