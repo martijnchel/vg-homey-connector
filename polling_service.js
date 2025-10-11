@@ -503,33 +503,30 @@ async function pollVirtuagym() {
 
         const visits = response.data.result || [];
         
+        // Filter alleen check-ins die NIEUWER zijn dan de laatst verwerkte tijdstempel
         const newVisits = visits
             .filter(visit => visit.check_in_timestamp > latestCheckinTimestamp && visit.check_in_timestamp > 0);
 
         if (newVisits.length > 0) {
-            let maxTimestamp = latestCheckinTimestamp; 
+            
+            // Sorteer om er zeker van te zijn dat de meest recente bovenaan staat
+            newVisits.sort((a, b) => b.check_in_timestamp - a.check_in_timestamp);
+            
+            // --- NIEUWE LOGICA: VERWERK ALLEEN DE ALLERNIEUWSTE CHECK-IN ---
+            const latestVisit = newVisits[0];
+            const maxTimestamp = latestVisit.check_in_timestamp;
 
-            // Verwerk elke nieuwe check-in individueel
-            for (const visit of newVisits) {
-                const memberId = visit.member_id;
-                const checkinTs = visit.checkin_time || visit.check_in_timestamp; 
+            const memberId = latestVisit.member_id;
+            const checkinTs = maxTimestamp;
 
-                if (checkinTs > maxTimestamp) {
-                    maxTimestamp = checkinTs;
-                }
-
-                const memberName = await getMemberName(memberId); 
-                
-                console.log(`[NIEUWE CHECK-IN VERWERKING]: User ${memberName} (${memberId}) at ${new Date(checkinTs).toISOString()}. Stuurt INDIVIDUELE Homey melding.`);
-                
-                // Trigger Homey voor individuele check-in
-                await triggerHomeyIndividualWebhook(memberName, checkinTs); 
-                
-                // Korte pauze tegen rate-limits (vermindert de kans op 429 bij opeenvolgende Homey calls)
-                await new Promise(resolve => setTimeout(resolve, 50)); 
-            }
-
-            // Update de timestamp voor de volgende poll
+            const memberName = await getMemberName(memberId); 
+            
+            console.log(`[NIEUWE CHECK-IN VERWERKING]: User ${memberName} (${memberId}) at ${new Date(checkinTs).toISOString()}. Stuurt ENKELE Homey melding.`);
+            
+            // Trigger Homey voor de allerlaatste (meest recente) check-in
+            await triggerHomeyIndividualWebhook(memberName, checkinTs); 
+            
+            // Update de timestamp voor de volgende poll naar de tijdstempel van DIT MEEST RECENTE BEZOEK
             latestCheckinTimestamp = maxTimestamp;
             
             console.log(`Individual Polling complete. Nieuwste tijdstempel: ${latestCheckinTimestamp}`);
