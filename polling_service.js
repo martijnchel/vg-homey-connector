@@ -112,7 +112,7 @@ function getYesterdayTimeRange() {
 
 
 /**
- * Functie om de Homey Webhook aan te roepen voor de DAGELIJKSE TOTALEN.
+ * Functie om de Homey Webhook aan te roepen voor de DAGELIJKS TOTALEN.
  * @param {number} totalCount - Het totale aantal check-ins vandaag.
  * @param {boolean} isTest - Geeft aan of de oproep een test is (om de vlag niet te zetten).
  */
@@ -358,8 +358,8 @@ async function sendExpiringContractsReport(isTest = false) {
                 }
             }
             
-            // INTRODUCTIE VAN THROTTLING (300ms) om Rate-Limit (429) tijdens bulk-checks te voorkomen
-            await new Promise(resolve => setTimeout(resolve, 300));
+            // INTRODUCTIE VAN THROTTLING (500ms) om Rate-Limit (429) tijdens bulk-checks te voorkomen
+            await new Promise(resolve => setTimeout(resolve, 500));
         }
         
         // 4. Genereer EENVOUDIG rapport en verstuur Homey Webhook
