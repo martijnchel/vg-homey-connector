@@ -29,52 +29,58 @@ const VG_MEMBER_BASE_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/mem
 // Statusvariabelen
 let latestCheckinTimestamp = Date.now(); // Houdt de laatste verwerkte check-in tijd bij
 let isPolling = false; 
-let hasTotalBeenSentToday = false; // Nieuwe vlag om te garanderen dat het totaal maar één keer wordt verstuurd
+let hasTotalBeenSentToday = false; // Vlag om te garanderen dat het totaal maar één keer wordt verstuurd
 
 /**
  * Berekent de Unix-tijdstempel (in milliseconden) voor het begin van de huidige dag 
  * in de tijdzone 'Europe/Amsterdam', geconverteerd naar UTC-milliseconden.
+ * * FIX: Gebruikt nu een robuustere methode om middernacht Amsterdam te bepalen.
  * @returns {number} Unix timestamp (in ms) voor 00:00:00 Amsterdamse tijd.
  */
 function getStartOfTodayUtc() {
     const d = new Date();
-    // Creëer een string representatie van de datum in Amsterdamse tijd (bv. "10/25/2025")
+    
+    // Maak een string representatie van de datum in Amsterdamse tijd (bv. "2025-10-10")
+    // Dit zorgt ervoor dat de basisdatum de lokale dag in Amsterdam is.
     const amsDateStr = d.toLocaleString('en-US', { 
         timeZone: 'Europe/Amsterdam', 
         year: 'numeric', 
         month: '2-digit', 
         day: '2-digit' 
-    });
+    }).split('/'); 
+
+    // Herformateer naar YYYY-MM-DD
+    const datePart = `${amsDateStr[2]}-${amsDateStr[0]}-${amsDateStr[1]}`; 
     
-    // Converteer naar ISO-achtige string (2025-10-25) en zet de tijd op 00:00:00
-    const parts = amsDateStr.split('/'); 
-    const datePart = `${parts[2]}-${parts[0]}-${parts[1]}`; 
+    // De toLocaleString zorgt ervoor dat we de juiste dag hebben. Door setHours(0,0,0,0) te gebruiken 
+    // op een Date object dat met die string is aangemaakt, forceren we de UTC timestamp voor middernacht.
+    // Dit is de meest betrouwbare methode op servers met onbekende tijdzones.
+    const midnightAms = new Date(new Date().toLocaleString("en-US", {timeZone: "Europe/Amsterdam"}).split('/').reverse().join('/')).setHours(0, 0, 0, 0);
     
-    // Maak een Date object dat dit punt (00:00:00) vertegenwoordigt. 
-    // De getTime() is de UTC timestamp van Amsterdam middernacht.
-    const startOfDayAms = new Date(`${datePart} 00:00:00`);
-    
-    return startOfDayAms.getTime();
+    return midnightAms;
 }
 
 /**
  * Functie om de Homey Webhook aan te roepen voor de DAGELIJKSE TOTALEN.
  * @param {number} totalCount - Het totale aantal check-ins vandaag.
+ * @param {boolean} isTest - Geeft aan of de oproep een test is (om de vlag niet te zetten).
  */
-async function triggerHomeyDailyTotalWebhook(totalCount) {
+async function triggerHomeyDailyTotalWebhook(totalCount, isTest = false) {
     if (!HOMEY_DAILY_TOTAL_URL) {
         return; 
     }
 
     try {
-        // Gebruik de Nederlandse tijdzone voor de weergave van de datum
         const dateString = new Date().toLocaleDateString('nl-NL', { 
             day: 'numeric', 
             month: 'long', 
             timeZone: 'Europe/Amsterdam' 
         });
+        
+        // Voeg [TEST] toe aan de tag als het een test is
+        const testPrefix = isTest ? '[TEST] ' : '';
 
-        const tagValue = `Totaal vandaag (${dateString}): ${totalCount} check-ins`;
+        const tagValue = `${testPrefix}Totaal vandaag (${dateString}): ${totalCount} check-ins`;
         const baseUrlClean = HOMEY_DAILY_TOTAL_URL.split('?')[0];
         const url = `${baseUrlClean}?tag=${encodeURIComponent(tagValue)}`;
         
@@ -84,8 +90,10 @@ async function triggerHomeyDailyTotalWebhook(totalCount) {
         
         console.log(`Homey Daily Total Webhook successful. Status: ${response.status}`);
         
-        // Zodra succesvol verzonden, zetten we de vlag om meervoudig versturen te voorkomen
-        hasTotalBeenSentToday = true;
+        // Zet de vlag alleen als het GEEN test is
+        if (!isTest) {
+            hasTotalBeenSentToday = true;
+        }
         
     } catch (error) {
         console.error("Fout bij aanroepen Homey Dagelijkse Totalen Webhook:", error.message);
@@ -136,7 +144,7 @@ async function getMemberName(memberId) {
 }
 
 /**
- * Functie om de Homey Webhook aan te roepen voor INDIVIDUELE check-ins. (Ongewijzigd)
+ * Functie om de Homey Webhook aan te roepen voor INDIVIDUELE check-ins.
  */
 async function triggerHomeyIndividualWebhook(userName, checkinTime) {
     if (!HOMEY_INDIVIDUAL_URL) {
@@ -183,30 +191,40 @@ async function triggerHomeyIndividualWebhook(userName, checkinTime) {
 
 /**
  * Haalt het totale aantal check-ins op voor de huidige dag en triggert de Homey webhook.
+ * @param {boolean} isTest - Geeft aan of deze oproep afkomstig is van de test-endpoint.
  */
-async function sendDailyTotal() {
+async function sendDailyTotal(isTest = false) {
     try {
         const startOfTodayUtc = getStartOfTodayUtc();
         const nowUtc = Date.now();
         
-        console.log(`[DAILY TOTAL] Start ophalen van dagelijks totaal (vanaf ${new Date(startOfTodayUtc).toLocaleTimeString('nl-NL', { timeZone: 'Europe/Amsterdam' })}).`);
+        // Log de tijdstempel correct in Amsterdamse tijd voor debuggen
+        const amsTimeDebug = new Date(startOfTodayUtc).toLocaleTimeString('nl-NL', { timeZone: 'Europe/Amsterdam', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        console.log(`[DAILY TOTAL] Start ophalen van dagelijks totaal (vanaf 00:00:00 Amsterdam).`);
 
+        // We vragen nu ALLE bezoeken van middernacht tot nu op
         const responseTotal = await axios.get(VG_VISITS_BASE_URL, {
             params: {
                 api_key: API_KEY,
                 club_secret: CLUB_SECRET,
-                sync_from: startOfTodayUtc, // Vanaf middernacht van vandaag
-                sync_to: nowUtc 
+                sync_from: startOfTodayUtc, 
+                sync_to: nowUtc,
+                limit: 1000 
             }
         });
         
-        const totalCount = responseTotal.data.result_count;
-        
-        if (typeof totalCount === 'number') {
+        // Tel de resultaten zelf
+        const visitsResult = responseTotal.data.result;
+        let totalCount = 0;
+        if (Array.isArray(visitsResult)) {
+            totalCount = visitsResult.length;
+        }
+
+        if (totalCount >= 0) { // Stuur de pushmelding altijd, ook bij 0
             console.log(`[DAILY TOTAL]: Totaal aantal check-ins vandaag: ${totalCount}`);
-            await triggerHomeyDailyTotalWebhook(totalCount);
+            await triggerHomeyDailyTotalWebhook(totalCount, isTest);
         } else {
-             console.warn("[WAARSCHUWING] 'result_count' niet gevonden in response voor dagelijks totaal. Geen Homey push.");
+             console.warn("[WAARSCHUWING] Onverwachte data structuur voor dagelijks totaal.");
         }
 
     } catch (error) {
@@ -235,11 +253,11 @@ function checkDailySchedule() {
     // Verstuur tussen 23:59:00 en 23:59:59
     if (amsTime.startsWith('23:59') && !hasTotalBeenSentToday) {
         console.log("!!! Planning geactiveerd: Tijd om dagelijkse totalen te versturen. !!!");
-        sendDailyTotal();
+        // Oproep zonder isTest, dus de vlag wordt gezet en de 23:59 run is eenmalig
+        sendDailyTotal(false); 
     } 
     
     // Reset de vlag vroeg in de ochtend, bijvoorbeeld tussen 00:00 en 00:01
-    // Dit zorgt ervoor dat de melding morgen weer gestuurd kan worden.
     if (amsTime.startsWith('00:00') && hasTotalBeenSentToday) {
         hasTotalBeenSentToday = false;
         console.log("Dagelijkse totaal vlag gereset. Klaar voor de nieuwe dag.");
@@ -282,15 +300,18 @@ async function pollVirtuagym() {
             }, newVisits[0]); 
 
             const memberId = latestVisit.member_id;
-            const checkinTime = latestVisit.check_in_timestamp; 
+            const checkinTime = latestVisit.checkin_time; // Gebruik checkin_time in plaats van check_in_timestamp voor consistentie
+            
+            // Omdat de eerdere logica werkte met check_in_timestamp bij filter, houden we dat aan voor de tijdsvergelijking
+            const latestCheckinTs = latestVisit.check_in_timestamp;
 
             const memberName = await getMemberName(memberId); 
             
-            console.log(`[LAATSTE NIEUWE CHECK-IN]: User ${memberName} (${memberId}) at ${new Date(checkinTime).toISOString()}`);
+            console.log(`[LAATSTE NIEUWE CHECK-IN]: User ${memberName} (${memberId}) at ${new Date(latestCheckinTs).toISOString()}`);
             
-            await triggerHomeyIndividualWebhook(memberName, checkinTime); 
+            await triggerHomeyIndividualWebhook(memberName, latestCheckinTs); 
             
-            latestCheckinTimestamp = checkinTime;
+            latestCheckinTimestamp = latestCheckinTs;
             
             console.log(`Individual Polling complete. Nieuwste tijdstempel: ${latestCheckinTimestamp}`);
             
@@ -314,6 +335,23 @@ async function pollVirtuagym() {
 app.get('/', (req, res) => {
     res.send('Virtuagym-Homey Polling Connector is running and polling every 2.5 minutes.');
 });
+
+// NIEUW ENDPOINT VOOR HANDMATIG TESTEN
+app.get('/test-daily-total-send', async (req, res) => {
+    const originalFlag = hasTotalBeenSentToday;
+    
+    console.log('--- TEST ACTIVERING DAGELIJKS TOTAAL ---');
+    console.log(`Oorspronkelijke vlag state: ${originalFlag}`);
+    
+    // Zorg ervoor dat de vlag NIET gezet wordt door de test, zodat 23:59 niet wordt overgeslagen
+    await sendDailyTotal(true); // Voer de totale telling uit met isTest=true
+    
+    // Herstel de oorspronkelijke vlag. 
+    hasTotalBeenSentToday = originalFlag; 
+
+    res.status(200).send('Dagelijkse totaal-telling geactiveerd. Controleer de Homey logs voor een bericht met de tag [TEST]. De vlag is hersteld om 23:59 niet te beïnvloeden.');
+});
+
 
 // Start de server en de Polling Loops
 app.listen(PORT, () => {
