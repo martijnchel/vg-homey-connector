@@ -193,7 +193,18 @@ async function triggerHomeyIndividualWebhook(memberName, checkinTime) {
     }
 
     try {
-        const tagValue = `${memberName} is nu ingecheckt.`;
+        const checkinDate = new Date(checkinTime);
+        
+        // Formatteer de tijd naar Amsterdamse tijd (HH:MM)
+        const formattedTime = checkinDate.toLocaleTimeString('nl-NL', { 
+            hour: '2-digit', 
+            minute: '2-digit', 
+            timeZone: 'Europe/Amsterdam' 
+        });
+
+        // Update: Voeg de formattedTime toe aan de tagValue
+        const tagValue = `${memberName} is nu ingecheckt om ${formattedTime}.`;
+        
         const url = `${HOMEY_INDIVIDUAL_URL}?tag=${encodeURIComponent(tagValue)}&ts=${checkinTime}`;
         
         console.log(`[DEBUG] Sending GET request to Homey (INDIVIDUEEL) met tag: "${tagValue}"`);
