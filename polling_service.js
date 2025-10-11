@@ -10,7 +10,8 @@ const app = express();
 
 // Gebruik de PORT die door de hostingomgeving (Railway) wordt geleverd
 const PORT = process.env.PORT || 3000;
-const POLLING_INTERVAL_MS = 150000; // Poll individuele check-ins elke 2,5 minuten (150.000 ms)
+// Aangepast naar 5 minuten (300.000 ms) om 429 (Too Many Requests) fouten te voorkomen.
+const POLLING_INTERVAL_MS = 300000; // Poll individuele check-ins elke 5 minuten (300.000 ms)
 const SCHEDULE_CHECK_INTERVAL_MS = 60000; // Controleer elke minuut of de scheduled tijd is bereikt
 
 // Configuratie via Omgevingsvariabelen (MOETEN in Railway worden ingesteld!)
@@ -188,7 +189,7 @@ async function triggerHomeyDailyReportWebhook(reportText, isTest = false) {
  */
 async function triggerHomeyIndividualWebhook(memberName, checkinTime) {
     if (!HOMEY_INDIVIDUAL_URL) {
-        console.error("Fout: HOMEY_INDIVIDUAL_URL omgevingsvariabele is niet ingesteld. Individuele Homey melding wordt overgeslagen.");
+        console.error("Fout: HOMEY_INDIVIDUEEL_URL omgevingsvariabele is niet ingesteld. Individuele Homey melding wordt overgeslagen.");
         return; 
     }
 
@@ -356,6 +357,9 @@ async function sendExpiringContractsReport(isTest = false) {
                     membersToReport.push({ memberName, endDate }); 
                 }
             }
+            
+            // INTRODUCTIE VAN THROTTLING (300ms) om Rate-Limit (429) tijdens bulk-checks te voorkomen
+            await new Promise(resolve => setTimeout(resolve, 300));
         }
         
         // 4. Genereer EENVOUDIG rapport en verstuur Homey Webhook
@@ -384,7 +388,7 @@ async function sendExpiringContractsReport(isTest = false) {
     } catch (error) {
         console.error("!!! KRITISCHE FOUT BIJ DAGELIJKS RAPPORT AANROEP !!!");
         if (error.response) {
-            console.error(`Status: ${error.response.status}`);
+            console.error(`Status: ${error.response.status}. Mogelijke Rate-Limit (429) ondanks throttling.`);
         } else {
             console.error("Netwerk/Algemene Fout:", error.message);
         }
@@ -521,7 +525,7 @@ async function pollVirtuagym() {
                 // Trigger Homey voor individuele check-in
                 await triggerHomeyIndividualWebhook(memberName, checkinTs); 
                 
-                // Korte pauze tegen rate-limits
+                // Korte pauze tegen rate-limits (vermindert de kans op 429 bij opeenvolgende Homey calls)
                 await new Promise(resolve => setTimeout(resolve, 50)); 
             }
 
@@ -537,7 +541,8 @@ async function pollVirtuagym() {
     } catch (error) {
         console.error("!!! KRITISCHE POLLING FOUT BIJ INDIVIDUELE CHECK-IN AANROEP !!!");
         if (error.response) {
-            console.error(`Status: ${error.response.status}. URL: ${VG_VISITS_BASE_URL}`);
+            // Log de 429 status specifiek
+            console.error(`Status: ${error.response.status}. Virtuagym's API heeft een Rate-Limit (429) afgedwongen. Check het interval.`);
         } else {
             console.error("Netwerk/Algemene Fout:", error.message);
         }
@@ -548,7 +553,7 @@ async function pollVirtuagym() {
 
 // Een simpel GET-endpoint voor het testen van de server connectie
 app.get('/', (req, res) => {
-    res.send('Virtuagym-Homey Polling Connector is running and polling every 2.5 minutes. LET OP: De 7-dagen rapport tracking is in-memory en reset bij herstart.');
+    res.send('Virtuagym-Homey Polling Connector is running and polling every 5 minutes. LET OP: De 7-dagen rapport tracking is in-memory en reset bij herstart.');
 });
 
 // ENDPOINT VOOR HANDMATIG TESTEN VAN DAGELIJKS TOTAAL
@@ -587,7 +592,7 @@ app.listen(PORT, () => {
     
     console.log(`Virtuagym Polling Service luistert op poort ${PORT}.`);
     
-    // 1. Individuele check-in polling loop (elke 2,5 minuut)
+    // 1. Individuele check-in polling loop (elke 5 minuut)
     setInterval(pollVirtuagym, POLLING_INTERVAL_MS);
     pollVirtuagym(); // Eerste aanroep direct starten
     
