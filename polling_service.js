@@ -9,7 +9,7 @@ const app = express();
 // Gebruik de PORT die door de hostingomgeving (Railway) wordt geleverd
 const PORT = process.env.PORT || 3000;
 const POLLING_INTERVAL_MS = 150000; // Poll individuele check-ins elke 2,5 minuten (150.000 ms)
-const DAILY_CHECK_INTERVAL_MS = 60000; // Controleer elke minuut op de planning voor het dagtotaal (23:59)
+const SCHEDULE_CHECK_INTERVAL_MS = 60000; // Controleer elke minuut of de scheduled tijd is bereikt
 
 // Configuratie via Omgevingsvariabelen (MOETEN in Railway worden ingesteld!)
 const CLUB_ID = process.env.CLUB_ID;
@@ -19,31 +19,39 @@ const CLUB_SECRET = process.env.CLUB_SECRET;
 // 1. URL voor INDIVIDUELE check-ins (gebruikt HOMEY_URL)
 const HOMEY_INDIVIDUAL_URL = process.env.HOMEY_URL; 
 
-// 2. NIEUWE URL voor DAGELIJKSE TOTALEN (Moet in Railway worden ingesteld!)
+// 2. URL voor DAGELIJKSE TOTALEN (Moet in Railway worden ingesteld!)
 const HOMEY_DAILY_TOTAL_URL = process.env.HOMEY_DAILY_TOTAL_URL; 
+
+// 3. NIEUWE URL voor DAGELIJKSE VERVAL RAPPORTAGE (Moet in Railway worden ingesteld!)
+const HOMEY_DAILY_EXPIRING_REPORT_URL = process.env.HOMEY_DAILY_EXPIRING_REPORT_URL; 
 
 // Base URL's voor de Virtuagym API's
 const VG_VISITS_BASE_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/visits`;
 const VG_MEMBER_BASE_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/member`; 
+const VG_MEMBERSHIP_BASE_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/membership/instance`; 
+
+// Constanten voor Contract Check
+const CONTRACT_EXPIRY_THRESHOLD_MS = 4 * 7 * 24 * 60 * 60 * 1000; // 4 weken in milliseconden
+const EXCLUDED_MEMBERSHIP_NAMES = ["Premium Flex", "Student Flex"]; // Uitsluitingen
+
+// Planningstijden (Amsterdamse Tijd)
+const DAILY_TOTAL_TIME = '23:59'; 
+const DAILY_REPORT_TIME = '09:00'; // De nieuwe tijd voor het contractenrapport
 
 // Statusvariabelen
 let latestCheckinTimestamp = Date.now(); // Houdt de laatste verwerkte check-in tijd bij
 let isPolling = false; 
-let hasTotalBeenSentToday = false; // Vlag om te garanderen dat het totaal maar één keer wordt verstuurd
+let hasTotalBeenSentToday = false; // Vlag voor het dagtotaal (23:59)
+let hasReportBeenSentToday = false; // NIEUWE Vlag voor het contractenrapport (09:00)
 
 /**
  * Berekent de Unix-tijdstempel (in milliseconden) voor het begin van de huidige dag 
  * in de tijdzone 'Europe/Amsterdam', geconverteerd naar UTC-milliseconden.
- * * FIX: Gebruikt de 'sv-SE' locale om de datum in ISO-formaat (YYYY-MM-DD) op te halen
- * in de Amsterdamse tijdzone. Het aanmaken van een Date object met deze string 
- * + T00:00:00 is de meest betrouwbare manier om middernacht in een specifieke 
- * tijdzone te bepalen, ongeacht de server's lokale tijd.
- * * @returns {number} Unix timestamp (in ms) voor 00:00:00 Amsterdamse tijd.
+ * @returns {number} Unix timestamp (in ms) voor 00:00:00 Amsterdamse tijd.
  */
 function getStartOfTodayUtc() {
     const today = new Date();
     
-    // 1. Haal de datum in YYYY-MM-DD formaat op in Amsterdamse tijd
     const amsDateString = today.toLocaleDateString('sv-SE', { 
         timeZone: 'Europe/Amsterdam', 
         year: 'numeric', 
@@ -51,17 +59,28 @@ function getStartOfTodayUtc() {
         day: '2-digit' 
     }); 
     
-    // 2. Creëer de lokale middernachtstring (e.g., "2025-10-11T00:00:00")
-    // Let op: JS interpreteert dit als lokale tijd, en de getTime() is dan de UTC-equivalent.
     const localMidnightString = `${amsDateString}T00:00:00`;
-    
-    // 3. Converteer naar UTC milliseconden
     const startOfTodayUtcTime = new Date(localMidnightString).getTime();
-    
-    console.log(`[DEBUG - TIJDZONE] Berekende Amsterdamse middernacht (${amsDateString}) als UTC timestamp: ${startOfTodayUtcTime}`);
     
     return startOfTodayUtcTime;
 }
+
+/**
+ * Berekent de Unix-tijdstempel (in milliseconden) voor het begin van de vorige dag (gisteren) 
+ * in de tijdzone 'Europe/Amsterdam'.
+ * @returns {{start: number, end: number}} Start en eindtijdstempels voor gisteren.
+ */
+function getYesterdayTimeRange() {
+    const startOfToday = getStartOfTodayUtc();
+    const dayInMs = 24 * 60 * 60 * 1000;
+
+    const startOfYesterday = startOfToday - dayInMs;
+    // We gebruiken de start van vandaag als de sync_to parameter (exclusief)
+    const endOfYesterday = startOfToday; 
+
+    return { start: startOfYesterday, end: endOfYesterday };
+}
+
 
 /**
  * Functie om de Homey Webhook aan te roepen voor de DAGELIJKSE TOTALEN.
@@ -76,40 +95,64 @@ async function triggerHomeyDailyTotalWebhook(totalCount, isTest = false) {
 
     try {
         const baseUrlClean = HOMEY_DAILY_TOTAL_URL.split('?')[0];
-        
-        // Terug naar de leesbare Nederlandse zin, nu de Homey URL-configuratie correct is.
         let tagValue = `Vandaag zijn er ${totalCount} leden ingecheckt.`;
 
-        // Voeg [TEST] prefix toe als het een testrun is.
         if (isTest) {
             tagValue = `[TEST] ${tagValue}`;
         }
         
-        // Encodeer de leesbare string en verstuur als 'tag'.
         const url = `${baseUrlClean}?tag=${encodeURIComponent(tagValue)}`;
         
-        console.log(`[DEBUG] Homey DAGELIJKS TOTAAL URL (Volledig): ${url}`);
-        console.log(`Sending GET request to Homey (DAGELIJKS TOTAAL) met tag (tekst): ${tagValue}`);
-        
+        console.log(`[DEBUG] Sending GET request to Homey (DAGELIJKS TOTAAL) met tag (tekst): ${tagValue}`);
         const response = await axios.get(url);
         
         console.log(`Homey Daily Total Webhook successful. Status: ${response.status}`);
         
-        // Zet de vlag alleen als het GEEN test is
         if (!isTest) {
             hasTotalBeenSentToday = true;
         }
         
     } catch (error) {
         console.error("Fout bij aanroepen Homey Dagelijkse Totalen Webhook:", error.message);
-        if (error.response) {
-            console.error(`Homey Call Fout Status: ${error.response.status}. Zorg ervoor dat de HOMEY_DAILY_TOTAL_URL correct is ingesteld.`);
-            
-            // Debug instructie voor de gebruiker:
-            console.error(`PROBEER DEZE URL HANDMATIG: Homey URL: ${HOMEY_DAILY_TOTAL_URL.split('?')[0]}?tag=${encodeURIComponent(tagValue)}`);
-        }
     }
 }
+
+/**
+ * Functie om de Homey Webhook aan te roepen voor het dagelijkse contractrapport.
+ * @param {string} reportText - Het samengevoegde rapport.
+ * @param {boolean} isTest - Geeft aan of de oproep een test is.
+ */
+async function triggerHomeyDailyReportWebhook(reportText, isTest = false) {
+    if (!HOMEY_DAILY_EXPIRING_REPORT_URL) {
+        console.error("Fout: HOMEY_DAILY_EXPIRING_REPORT_URL omgevingsvariabele is niet ingesteld.");
+        return;
+    }
+
+    try {
+        const baseUrlClean = HOMEY_DAILY_EXPIRING_REPORT_URL.split('?')[0];
+        let tagValue = reportText;
+        
+        if (isTest) {
+             tagValue = `[TEST RAPPORT] ${reportText}`;
+        }
+
+        // De Homey tag wordt hier zo eenvoudig mogelijk verstuurd.
+        const url = `${baseUrlClean}?tag=${encodeURIComponent(tagValue)}`;
+        
+        console.log(`[DEBUG] Sending GET request to Homey (DAGELIJKS RAPPORT) met bericht: "${tagValue}"`);
+        
+        const response = await axios.get(url);
+        
+        console.log(`Homey Daily Report Webhook successful. Status: ${response.status}`);
+        
+        if (!isTest) {
+            hasReportBeenSentToday = true;
+        }
+    } catch (error) {
+        console.error("Fout bij aanroepen Homey Dagelijks Rapport Webhook:", error.message);
+    }
+}
+
 
 /**
  * Haalt de volledige naam op van een lid op basis van de member_id.
@@ -136,114 +179,180 @@ async function getMemberName(memberId) {
         
         if (memberData && memberData.firstname) { 
             const fullName = `${memberData.firstname} ${memberData.lastname || ''}`.trim();
-            console.log(`[DEBUG] Lid ID ${memberId} gevonden als: ${fullName}`);
             return fullName;
         } else {
-            console.warn(`[DEBUG] Naam niet gevonden voor Lid ID ${memberId}. Gebruik fallback ID.`);
             return `Lid ${memberId}`;
         }
     } catch (error) {
         console.error(`[FOUT] Kan naam niet ophalen voor Lid ID ${memberId}.`);
-        if (error.response) {
-            console.error(`VG API Fout Status: ${error.response.status}`);
-            console.error("VG API Fout Data:", error.response.data);
-        } else {
-            console.error("Netwerk/Algemene Fout:", error.message);
-        }
         return `Lid ${memberId}`;
     }
 }
 
+// =======================================================
+// NIEUWE FUNCTIE VOOR AFLOPENDE CONTRACTEN CHECK (Retouneert gegevens)
+// =======================================================
+
 /**
- * Functie om de Homey Webhook aan te roepen voor INDIVIDUELE check-ins.
+ * Controleert de lidmaatschapsstatus van een lid en retourneert de vervaldatum indien van toepassing.
+ * @param {number} memberId - Het ID van het lid.
+ * @returns {Promise<string|null>} De contract_end_date (ISO string) of null.
  */
-async function triggerHomeyIndividualWebhook(userName, checkinTime) {
-    if (!HOMEY_INDIVIDUAL_URL) {
-        console.error("Fout: HOMEY_URL omgevingsvariabele is niet ingesteld.");
-        return;
+async function getExpiringContractDetails(memberId) {
+    if (!CLUB_ID || !API_KEY || !CLUB_SECRET) {
+        return null; 
     }
 
     try {
-        const checkinDate = new Date(checkinTime);
-        const timezoneOptions = { timeZone: 'Europe/Amsterdam' };
+        const now = Date.now();
+        const futureExpiryLimit = now + CONTRACT_EXPIRY_THRESHOLD_MS;
+
+        const membershipUrl = `${VG_MEMBERSHIP_BASE_URL}`;
         
-        const formattedDate = checkinDate.toLocaleDateString('nl-NL', { 
-            day: 'numeric', 
-            month: 'long', 
-            ...timezoneOptions
+        const response = await axios.get(membershipUrl, {
+            params: {
+                api_key: API_KEY,
+                club_secret: CLUB_SECRET,
+                member_id: memberId,
+                sync_from: 0,
+                limit: 10
+            }
         });
 
-        const formattedTimeOnly = checkinDate.toLocaleTimeString('nl-NL', { 
-            hour: '2-digit', 
-            minute: '2-digit', 
-            second: '2-digit',
-            ...timezoneOptions
+        const memberships = response.data.result || [];
+        
+        // Zoek naar het contract dat bijna afloopt en aan de voorwaarden voldoet
+        const expiringContract = memberships.find(membership => {
+            
+            if (!membership.contract_end_date) {
+                return false;
+            }
+            
+            const contractEndDateMs = new Date(membership.contract_end_date).getTime();
+            
+            const isExpiringSoon = contractEndDateMs > now && contractEndDateMs <= futureExpiryLimit;
+
+            const isExcluded = EXCLUDED_MEMBERSHIP_NAMES.includes(membership.membership_name);
+            
+            return isExpiringSoon && !isExcluded;
         });
 
-        // De oorspronkelijke, werkende implementatie met de lange tekst als 'tag'
-        const tagValue = `${userName} checkte in op ${formattedDate}, om ${formattedTimeOnly}`;
-        
-        const baseUrlClean = HOMEY_INDIVIDUAL_URL.split('?')[0];
-        const url = `${baseUrlClean}?tag=${encodeURIComponent(tagValue)}`;
-        
-        console.log(`Sending GET request to Homey (INDIVIDUEEL) met bericht: "${tagValue}"`);
-        
-        const response = await axios.get(url);
-        
-        console.log(`Homey Individual Webhook successful. Status: ${response.status}`);
+        return expiringContract ? expiringContract.contract_end_date : null;
+
     } catch (error) {
-        console.error("Fout bij aanroepen Homey Individual Webhook:", error.message);
+        console.error(`[FOUT] Kan lidmaatschapsstatus niet controleren voor Lid ID ${memberId}.`);
+        return null;
     }
 }
 
 
 // =======================================================
-// NIEUWE FUNCTIES VOOR DAGELIJKS TOTAAL
+// FUNCTIES VOOR DAGELIJKS RAPPORT (09:00)
 // =======================================================
 
 /**
- * Haalt het totale aantal check-ins op voor de huidige dag en triggert de Homey webhook.
- * Nu gefilterd op unieke leden (dubbele check-ins worden genegeerd).
- * @param {boolean} isTest - Geeft aan of deze oproep afkomstig is van de test-endpoint.
+ * Haalt alle unieke check-ins van gisteren op, controleert de contracten,
+ * en verstuurt een samengevat rapport om 09:00.
+ */
+async function sendExpiringContractsReport(isTest = false) {
+    console.log(`[DAGELIJKS RAPPORT] Start contractencheck voor alle check-ins van gisteren.`);
+    
+    try {
+        const { start: yesterdayStart, end: yesterdayEnd } = getYesterdayTimeRange();
+        
+        // 1. Haal alle bezoeken van gisteren op
+        const responseVisits = await axios.get(VG_VISITS_BASE_URL, {
+            params: {
+                api_key: API_KEY,
+                club_secret: CLUB_SECRET,
+                sync_from: yesterdayStart, 
+                sync_to: yesterdayEnd,
+                limit: 1000 
+            }
+        });
+        
+        const visitsResult = responseVisits.data.result || [];
+        
+        if (visitsResult.length === 0) {
+            console.log("[DAGELIJKS RAPPORT] Geen bezoeken gevonden voor gisteren. Rapport leeg.");
+            await triggerHomeyDailyReportWebhook("Geen leden ingecheckt gisteren.", isTest);
+            return;
+        }
+
+        // 2. Filter unieke leden
+        const uniqueMemberIds = Array.from(new Set(visitsResult.map(visit => visit.member_id).filter(id => id)));
+        console.log(`[DAGELIJKS RAPPORT] ${uniqueMemberIds.length} unieke leden gevonden om te controleren.`);
+
+        const expiringMembers = [];
+
+        // 3. Loop door unieke leden en controleer contracten
+        for (const memberId of uniqueMemberIds) {
+            const endDate = await getExpiringContractDetails(memberId);
+            
+            if (endDate) {
+                const memberName = await getMemberName(memberId);
+                // We slaan de datum nog op in het object, maar gebruiken hem niet in de Homey tag
+                expiringMembers.push({ memberName, endDate }); 
+            }
+        }
+        
+        // 4. Genereer EENVOUDIG rapport en verstuur Homey Webhook
+        let reportText;
+        if (expiringMembers.length === 0) {
+            reportText = "Contracten Rapport (Gisteren): Geen aflopende contracten gevonden (binnen 4 weken).";
+        } else {
+            const memberNames = expiringMembers.map(m => m.memberName);
+            
+            // Maak een nette lijst: "Naam A, Naam B en Naam C"
+            let nameList;
+            if (memberNames.length === 1) {
+                nameList = memberNames[0];
+            } else {
+                const last = memberNames.pop();
+                nameList = memberNames.join(', ') + ' en ' + last;
+            }
+
+            // Dit is de korte en duidelijke tag die naar Homey gaat
+            reportText = `🔔 CONTRACTEN RAPPORT (Gisteren): ${expiringMembers.length} leden met aflopend contract. Betreft: ${nameList}.`;
+        }
+        
+        console.log(`[DAGELIJKS RAPPORT] Rapport afgerond. Bericht: ${reportText}`);
+        await triggerHomeyDailyReportWebhook(reportText, isTest);
+        
+    } catch (error) {
+        console.error("!!! KRITISCHE FOUT BIJ DAGELIJKS RAPPORT AANROEP !!!");
+        if (error.response) {
+            console.error(`Status: ${error.response.status}`);
+        } else {
+            console.error("Netwerk/Algemene Fout:", error.message);
+        }
+    }
+}
+
+/**
+ * Haalt het totale aantal unieke check-ins op voor de huidige dag en triggert de Homey webhook.
  */
 async function sendDailyTotal(isTest = false) {
     try {
         const startOfTodayUtc = getStartOfTodayUtc();
         const nowUtc = Date.now();
         
-        // Log de tijdstempel die naar Virtuagym gaat
-        console.log(`[DAILY TOTAL] Start ophalen van dagelijks totaal (vanaf UTC timestamp: ${startOfTodayUtc}).`);
-
         const responseTotal = await axios.get(VG_VISITS_BASE_URL, {
             params: {
                 api_key: API_KEY,
                 club_secret: CLUB_SECRET,
                 sync_from: startOfTodayUtc, 
                 sync_to: nowUtc,
-                limit: 1000 // Zorg ervoor dat er voldoende limiet is om alle bezoeken op te halen
+                limit: 1000
             }
         });
         
-        const visitsResult = responseTotal.data.result;
-        let totalCount = 0;
-
-        if (Array.isArray(visitsResult) && visitsResult.length > 0) {
-            const uniqueMemberIds = new Set();
-            
-            // Loop door alle bezoeken en voeg de member_id toe aan de Set
-            visitsResult.forEach(visit => {
-                // Alleen de member_id's gebruiken (dit is de filtering)
-                if (visit.member_id) {
-                    uniqueMemberIds.add(visit.member_id);
-                }
-            });
-
-            // De grootte van de Set is het aantal unieke leden
-            totalCount = uniqueMemberIds.size;
-        }
+        const visitsResult = responseTotal.data.result || [];
+        const uniqueMemberIds = Array.from(new Set(visitsResult.map(visit => visit.member_id).filter(id => id)));
+        const totalCount = uniqueMemberIds.size;
 
         if (totalCount >= 0) { 
-            console.log(`[DAILY TOTAL]: Totaal aantal UNIEKE check-ins vandaag (gevonden): ${totalCount}`);
+            console.log(`[DAILY TOTAL]: Totaal aantal UNIEKE check-ins vandaag: ${totalCount}`);
             await triggerHomeyDailyTotalWebhook(totalCount, isTest);
         } else {
              console.warn("[WAARSCHUWING] Onverwachte data structuur voor dagelijks totaal.");
@@ -251,40 +360,52 @@ async function sendDailyTotal(isTest = false) {
 
     } catch (error) {
          console.error("!!! KRITISCHE POLLING FOUT BIJ DAGELIJKS TOTAAL AANROEP !!!");
-         if (error.response) {
-            console.error(`Status: ${error.response.status}. URL: ${VG_VISITS_BASE_URL}`);
-        } else {
-            console.error("Netwerk/Algemene Fout:", error.message);
-        }
     }
 }
 
 /**
- * Controleert elke minuut of het 23:59 is (Amsterdamse tijd) om het dagtotaal te versturen.
- * Reset de 'hasTotalBeenSentToday' vlag na middernacht.
+ * Controleert elke minuut of de geplande tijd is bereikt voor het dagelijkse totaal (23:59).
  */
-function checkDailySchedule() {
-    // Gebruik de Amsterdamse tijd voor planning
+function checkDailyTotalSchedule() {
     const amsTime = new Date().toLocaleTimeString('nl-NL', { 
         hour: '2-digit', 
         minute: '2-digit', 
-        second: '2-digit',
         timeZone: 'Europe/Amsterdam' 
     });
 
-    // Verstuur tussen 23:59:00 en 23:59:59
-    if (amsTime.startsWith('23:59') && !hasTotalBeenSentToday) {
-        console.log("!!! Planning geactiveerd: Tijd om dagelijkse totalen te versturen. !!!");
+    if (amsTime === DAILY_TOTAL_TIME && !hasTotalBeenSentToday) {
+        console.log(`!!! Planning geactiveerd: Tijd om dagelijkse totalen te versturen (${DAILY_TOTAL_TIME}). !!!`);
         sendDailyTotal(false); 
     } 
     
-    // Reset de vlag vroeg in de ochtend, bijvoorbeeld tussen 00:00 en 00:01
-    if (amsTime.startsWith('00:00') && hasTotalBeenSentToday) {
+    // Reset de vlag na middernacht
+    if (amsTime === '00:01' && hasTotalBeenSentToday) {
         hasTotalBeenSentToday = false;
         console.log("Dagelijkse totaal vlag gereset. Klaar voor de nieuwe dag.");
     }
 }
 
+/**
+ * Controleert elke minuut of de geplande tijd is bereikt voor het dagelijkse contractrapport (09:00).
+ */
+function checkMorningReportSchedule() {
+    const amsTime = new Date().toLocaleTimeString('nl-NL', { 
+        hour: '2-digit', 
+        minute: '2-digit', 
+        timeZone: 'Europe/Amsterdam' 
+    });
+    
+    if (amsTime === DAILY_REPORT_TIME && !hasReportBeenSentToday) {
+        console.log(`!!! Planning geactiveerd: Tijd om contractenrapport te versturen (${DAILY_REPORT_TIME}). !!!`);
+        sendExpiringContractsReport(false); 
+    } 
+    
+    // Reset de vlag na middernacht
+    if (amsTime === '00:01' && hasReportBeenSentToday) {
+        hasReportBeenSentToday = false;
+        console.log("Dagelijks rapport vlag gereset. Klaar voor de nieuwe dag.");
+    }
+}
 
 // =======================================================
 // HOOFD POLLING FUNCTIE (Alleen voor individuele check-ins)
@@ -300,7 +421,6 @@ async function pollVirtuagym() {
 
     console.log(`--- [POLL START] Polling Virtuagym op ${new Date().toLocaleTimeString()} ---`);
     
-    // 1. INDIVIDUELE CHECK-IN LOGICA (gebaseerd op de laatste timestamp)
     try {
         const response = await axios.get(VG_VISITS_BASE_URL, {
             params: {
@@ -316,20 +436,30 @@ async function pollVirtuagym() {
             .filter(visit => visit.check_in_timestamp > latestCheckinTimestamp && visit.check_in_timestamp > 0);
 
         if (newVisits.length > 0) {
-            const latestVisit = newVisits.reduce((latest, current) => {
-                return current.check_in_timestamp > latest.checkin_time ? current : latest;
-            }, newVisits[0]); 
+            let maxTimestamp = latestCheckinTimestamp; 
 
-            const memberId = latestVisit.member_id;
-            const latestCheckinTs = latestVisit.checkin_time; // Gebruik de check_in_timestamp van de laatste bezoeker
+            // Verwerk elke nieuwe check-in individueel
+            for (const visit of newVisits) {
+                const memberId = visit.member_id;
+                const checkinTs = visit.checkin_time || visit.check_in_timestamp; 
 
-            const memberName = await getMemberName(memberId); 
-            
-            console.log(`[LAATSTE NIEUWE CHECK-IN]: User ${memberName} (${memberId}) at ${new Date(latestCheckinTs).toISOString()}`);
-            
-            await triggerHomeyIndividualWebhook(memberName, latestCheckinTs); 
-            
-            latestCheckinTimestamp = latestCheckinTs;
+                if (checkinTs > maxTimestamp) {
+                    maxTimestamp = checkinTs;
+                }
+
+                const memberName = await getMemberName(memberId); 
+                
+                console.log(`[NIEUWE CHECK-IN VERWERKING]: User ${memberName} (${memberId}) at ${new Date(checkinTs).toISOString()}. Stuurt INDIVIDUELE Homey melding.`);
+                
+                // Trigger Homey voor individuele check-in
+                await triggerHomeyIndividualWebhook(memberName, checkinTs); 
+                
+                // Korte pauze tegen rate-limits
+                await new Promise(resolve => setTimeout(resolve, 50)); 
+            }
+
+            // Update de timestamp voor de volgende poll
+            latestCheckinTimestamp = maxTimestamp;
             
             console.log(`Individual Polling complete. Nieuwste tijdstempel: ${latestCheckinTimestamp}`);
             
@@ -354,20 +484,28 @@ app.get('/', (req, res) => {
     res.send('Virtuagym-Homey Polling Connector is running and polling every 2.5 minutes.');
 });
 
-// NIEUW ENDPOINT VOOR HANDMATIG TESTEN
+// ENDPOINT VOOR HANDMATIG TESTEN VAN DAGELIJKS TOTAAL
 app.get('/test-daily-total-send', async (req, res) => {
     const originalFlag = hasTotalBeenSentToday;
     
     console.log('--- TEST ACTIVERING DAGELIJKS TOTAAL ---');
-    console.log(`Oorspronkelijke vlag state: ${originalFlag}`);
-    
-    // Voer de totale telling uit met isTest=true
     await sendDailyTotal(true); 
     
-    // Herstel de oorspronkelijke vlag. 
     hasTotalBeenSentToday = originalFlag; 
 
     res.status(200).send('Dagelijkse totaal-telling geactiveerd. Controleer de Homey logs voor een pushmelding met de tag [TEST].');
+});
+
+// NIEUW ENDPOINT VOOR HANDMATIG TESTEN VAN DAGELIJKS RAPPORT
+app.get('/test-daily-report-send', async (req, res) => {
+    const originalFlag = hasReportBeenSentToday;
+    
+    console.log('--- TEST ACTIVERING DAGELIJKS CONTRACT RAPPORT (Gebruikt bezoeken van gisteren) ---');
+    await sendExpiringContractsReport(true); 
+    
+    hasReportBeenSentToday = originalFlag; 
+
+    res.status(200).send('Dagelijks Contract Rapport geactiveerd. Controleer de Homey logs voor een pushmelding met de tag [TEST RAPPORT].');
 });
 
 
@@ -375,19 +513,22 @@ app.get('/test-daily-total-send', async (req, res) => {
 app.listen(PORT, () => {
     if (!CLUB_ID || !API_KEY || !CLUB_SECRET) {
         console.error("\n!!! KRITISCHE FOUT: AUTHENTICATIEVARIABELEN ONTBREEKEN BIJ START !!!");
-        console.error("Zorg ervoor dat CLUB_ID, API_KEY, CLUB_SECRET en HOMEY_URL zijn ingesteld in de Railway variabelen.");
+        console.error("Zorg ervoor dat CLUB_ID, API_KEY, CLUB_SECRET, HOMEY_URL, HOMEY_DAILY_TOTAL_URL en HOMEY_DAILY_EXPIRING_REPORT_URL zijn ingesteld in de Railway variabelen.");
         process.exit(1);
     }
     console.log(`Virtuagym Polling Service luistert op poort ${PORT}.`);
     
-    // Start de INDIVIDUELE check-in polling loop (elke 2,5 minuut)
+    // 1. Individuele check-in polling loop (elke 2,5 minuut)
     setInterval(pollVirtuagym, POLLING_INTERVAL_MS);
     pollVirtuagym(); // Eerste aanroep direct starten
     
-    // Start de DAGELIJKS TOTALEN scheduler (elke 60 seconden om 23:59 te vangen)
-    setInterval(checkDailySchedule, DAILY_CHECK_INTERVAL_MS);
-    checkDailySchedule(); // Eerste aanroep direct starten
+    // 2. Dagelijks Totaal Scheduler (23:59)
+    setInterval(checkDailyTotalSchedule, SCHEDULE_CHECK_INTERVAL_MS);
+    checkDailyTotalSchedule(); // Eerste aanroep direct starten
     
-    console.log(`Individuele check-in poll interval: ${POLLING_INTERVAL_MS / 60000} minuten.`);
-    console.log(`Dagelijks totaal wordt gecontroleerd: elke ${DAILY_CHECK_INTERVAL_MS / 1000} seconden, verstuurd om 23:59.`);
+    // 3. Contracten Rapport Scheduler (09:00)
+    setInterval(checkMorningReportSchedule, SCHEDULE_CHECK_INTERVAL_MS);
+    checkMorningReportSchedule(); // Eerste aanroep direct starten
+    
+    console.log(`Polling status: Individueel (${POLLING_INTERVAL_MS / 60000} min), Dagelijks Totaal (${DAILY_TOTAL_TIME}), Contracten Rapport (${DAILY_REPORT_TIME}).`);
 });
