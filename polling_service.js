@@ -153,6 +153,34 @@ async function triggerHomeyDailyReportWebhook(reportText, isTest = false) {
     }
 }
 
+/**
+ * Functie om de Homey Webhook aan te roepen voor een INDIVIDUELE check-in.
+ * @param {string} memberName - De naam van het ingecheckte lid.
+ * @param {number} checkinTime - De Unix-tijdstempel van de check-in.
+ */
+async function triggerHomeyIndividualWebhook(memberName, checkinTime) {
+    if (!HOMEY_INDIVIDUAL_URL) {
+        console.error("Fout: HOMEY_INDIVIDUAL_URL omgevingsvariabele is niet ingesteld. Individuele Homey melding wordt overgeslagen.");
+        return; 
+    }
+
+    try {
+        // We sturen de naam en tijd mee als query parameters.
+        const tagValue = `${memberName} is nu ingecheckt.`;
+        
+        // HOMEY_INDIVIDUAL_URL moet de Homey flow trigger-ID al bevatten.
+        // We gebruiken de 'tag' parameter om de naam te versturen.
+        const url = `${HOMEY_INDIVIDUAL_URL}?tag=${encodeURIComponent(tagValue)}&ts=${checkinTime}`;
+        
+        console.log(`[DEBUG] Sending GET request to Homey (INDIVIDUEEL) met tag: "${tagValue}"`);
+        const response = await axios.get(url);
+        
+        console.log(`Homey Individual Webhook successful. Status: ${response.status}`);
+    } catch (error) {
+        console.error("Fout bij aanroepen Homey Individuele Webhook:", error.message);
+    }
+}
+
 
 /**
  * Haalt de volledige naam op van een lid op basis van de member_id.
