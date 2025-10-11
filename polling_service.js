@@ -4,14 +4,8 @@
 
 const express = require('express');
 const axios = require('axios');
-// Importeer Node.js Crypto voor anonieme ID's
-const crypto = require('crypto');
-
-// Firebase Imports voor Node.js (Gebruik makend van de Canvas Globals)
-const { initializeApp } = require("firebase/app");
-const { getAuth, signInAnonymously, signInWithCustomToken } = require("firebase/auth");
-const { getFirestore, doc, setDoc, getDoc, setLogLevel } = require("firebase/firestore");
-
+// Firebase is verwijderd om 'Cannot find module' fout op te lossen.
+// De persitentie voor de 7-dagen limiet is nu in-memory (niet persistent).
 const app = express();
 
 // Gebruik de PORT die door de hostingomgeving (Railway) wordt geleverd
@@ -39,8 +33,11 @@ const CONTRACT_EXPIRY_THRESHOLD_MS = 4 * 7 * 24 * 60 * 60 * 1000; // 4 weken in 
 const EXCLUDED_MEMBERSHIP_NAMES = ["Premium Flex", "Student Flex"]; // Uitsluitingen
 
 // Constanten voor Wekelijkse Rapportering (7 dagen)
-const TRACKING_COLLECTION_NAME = 'member_report_tracking';
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+// ** IN-MEMORY CACHE VOOR 7-DAGEN TRACKING **
+// { memberId: lastReportedTimestampMs } - LET OP: Deze reset bij herstart!
+let reportedMembersCache = {}; 
 
 // Planningstijden (Amsterdamse Tijd)
 const DAILY_TOTAL_TIME = '23:59'; 
@@ -52,96 +49,33 @@ let isPolling = false;
 let hasTotalBeenSentToday = false; 
 let hasReportBeenSentToday = false; 
 
-// Firebase Globale variabelen (gebruikt door de Canvas omgeving)
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'vg-homey-default';
-const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-
-let db;
-let auth;
-let userId = null; // Wordt ingesteld na authenticatie
 
 /**
- * Initialiseert Firebase en de Firestore/Auth services.
- * Gebruikt de Canvas Global variabelen.
- */
-async function initializeFirebaseAndAuth() {
-    console.log("Starte Firebase initialisatie...");
-    try {
-        if (Object.keys(firebaseConfig).length === 0) {
-            console.error("Firebase Config ontbreekt. Kan tracking niet inschakelen.");
-            return;
-        }
-
-        const firebaseApp = initializeApp(firebaseConfig);
-        db = getFirestore(firebaseApp);
-        auth = getAuth(firebaseApp);
-        setLogLevel('Debug');
-
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
-        if (initialAuthToken) {
-            await signInWithCustomToken(auth, initialAuthToken);
-        } else {
-            // Als er geen token is, meld anoniem aan
-            await signInAnonymously(auth);
-        }
-
-        userId = auth.currentUser?.uid || crypto.randomUUID();
-        console.log(`Firebase geïnitialiseerd. Gebruikers ID: ${userId} (App ID: ${appId})`);
-
-    } catch (error) {
-        console.error("Fout bij Firebase Auth/Init:", error.message);
-    }
-}
-
-/**
- * Firestore Functie: Controleert of een lid in de afgelopen 7 dagen is gemeld en update de status.
+ * In-Memory Functie: Controleert of een lid in de afgelopen 7 dagen is gemeld en update de status.
  * @param {number} memberId - Het ID van het lid.
- * @returns {Promise<boolean>} True als het lid mag worden gerapporteerd (en de status is bijgewerkt).
+ * @returns {boolean} True als het lid mag worden gerapporteerd (en de status is bijgewerkt).
  */
-async function checkAndRecordReportedStatus(memberId) {
-    if (!db || !userId) {
-        // Als Firebase niet is geinitialiseerd, rapporteren we altijd (geen tracking)
-        console.warn("Firebase niet klaar. Rapporteren zonder 7-dagen limiet.");
-        return true; 
+function checkAndRecordReportedStatus(memberId) {
+    const now = Date.now();
+    const lastReported = reportedMembersCache[memberId] || 0;
+    
+    // Controleer of de laatste melding minder dan 7 dagen geleden was
+    if (now - lastReported < ONE_WEEK_MS) {
+        console.log(`[RAPPORT UITSLUITING] Lid ${memberId} is in de afgelopen 7 dagen gemeld (laatste: ${new Date(lastReported).toISOString()}). Overgeslagen.`);
+        return false; // Al gerapporteerd deze week
     }
 
-    try {
-        const docPath = `/artifacts/${appId}/public/data/${TRACKING_COLLECTION_NAME}/${memberId}`;
-        const trackingRef = doc(db, docPath);
-
-        const docSnap = await getDoc(trackingRef);
-        const now = Date.now();
-        
-        // 1. Controleer de status
-        if (docSnap.exists()) {
-            const data = docSnap.data();
-            const lastReported = data.lastReported || 0;
-            
-            if (now - lastReported < ONE_WEEK_MS) {
-                // Minder dan 7 dagen geleden gemeld: NIET rapporteren
-                return false; 
-            }
-        }
-        
-        // 2. Mag gerapporteerd worden. Update de status direct.
-        await setDoc(trackingRef, {
-            memberId: memberId,
-            lastReported: now,
-            updateDate: new Date().toISOString()
-        }, { merge: true });
-
-        return true; // Rapporteren is toegestaan en de status is bijgewerkt
-
-    } catch (error) {
-        console.error(`Fout bij trackingstatus check/update voor lid ${memberId}:`, error.message);
-        return true; // Bij fouten rapporteren we voor de zekerheid toch
-    }
+    // Mag gerapporteerd worden. Update de status in het geheugen.
+    reportedMembersCache[memberId] = now;
+    console.log(`[RAPPORT INCLUSIEF] Lid ${memberId} wordt gerapporteerd. Tracking bijgewerkt naar ${new Date(now).toISOString()}.`);
+    
+    return true; // Rapporteren is toegestaan
 }
 
 /**
  * Berekent de Unix-tijdstempel (in milliseconden) voor het begin van de huidige dag 
  * in de tijdzone 'Europe/Amsterdam', geconverteerd naar UTC-milliseconden.
+ * @returns {number} Unix timestamp (in ms) voor 00:00:00 Amsterdamse tijd.
  */
 function getStartOfTodayUtc() {
     const today = new Date();
@@ -162,6 +96,7 @@ function getStartOfTodayUtc() {
 /**
  * Berekent de Unix-tijdstempel (in milliseconden) voor het begin van de vorige dag (gisteren) 
  * in de tijdzone 'Europe/Amsterdam'.
+ * @returns {{start: number, end: number}} Start en eindtijdstempels voor gisteren.
  */
 function getYesterdayTimeRange() {
     const startOfToday = getStartOfTodayUtc();
@@ -177,6 +112,8 @@ function getYesterdayTimeRange() {
 
 /**
  * Functie om de Homey Webhook aan te roepen voor de DAGELIJKSE TOTALEN.
+ * @param {number} totalCount - Het totale aantal check-ins vandaag.
+ * @param {boolean} isTest - Geeft aan of de oproep een test is (om de vlag niet te zetten).
  */
 async function triggerHomeyDailyTotalWebhook(totalCount, isTest = false) {
     if (!HOMEY_DAILY_TOTAL_URL) {
@@ -210,6 +147,8 @@ async function triggerHomeyDailyTotalWebhook(totalCount, isTest = false) {
 
 /**
  * Functie om de Homey Webhook aan te roepen voor het dagelijkse contractrapport.
+ * @param {string} reportText - Het samengevoegde rapport.
+ * @param {boolean} isTest - Geeft aan of de oproep een test is.
  */
 async function triggerHomeyDailyReportWebhook(reportText, isTest = false) {
     if (!HOMEY_DAILY_EXPIRING_REPORT_URL) {
@@ -244,6 +183,8 @@ async function triggerHomeyDailyReportWebhook(reportText, isTest = false) {
 
 /**
  * Functie om de Homey Webhook aan te roepen voor een INDIVIDUELE check-in.
+ * @param {string} memberName - De naam van het ingecheckte lid.
+ * @param {number} checkinTime - De Unix-tijdstempel van de check-in.
  */
 async function triggerHomeyIndividualWebhook(memberName, checkinTime) {
     if (!HOMEY_INDIVIDUAL_URL) {
@@ -396,15 +337,12 @@ async function sendExpiringContractsReport(isTest = false) {
             const endDate = await getExpiringContractDetails(memberId);
             
             if (endDate) {
-                // Contract loopt af: nu de wekelijkse check uitvoeren
-                const canReport = await checkAndRecordReportedStatus(memberId);
+                // Contract loopt af: nu de wekelijkse check uitvoeren (in-memory)
+                const canReport = checkAndRecordReportedStatus(memberId);
                 
                 if (canReport) {
                     const memberName = await getMemberName(memberId);
                     membersToReport.push({ memberName, endDate }); 
-                    console.log(`[RAPPORT INCLUSIEF] Lid ${memberName} wordt gerapporteerd (was > 7 dagen geleden of is nieuw).`);
-                } else {
-                    console.log(`[RAPPORT UITSLUITING] Lid ${memberId} is in de afgelopen 7 dagen gemeld. Overgeslagen.`);
                 }
             }
         }
@@ -462,7 +400,7 @@ async function sendDailyTotal(isTest = false) {
         
         const visitsResult = responseTotal.data.result || [];
         const uniqueMemberIds = Array.from(new Set(visitsResult.map(visit => visit.member_id).filter(id => id)));
-        const totalCount = uniqueMemberIds.length; // Gebruik .length op de array
+        const totalCount = uniqueMemberIds.length; 
 
         if (totalCount >= 0) { 
             console.log(`[DAILY TOTAL]: Totaal aantal UNIEKE check-ins vandaag: ${totalCount}`);
@@ -599,7 +537,7 @@ async function pollVirtuagym() {
 
 // Een simpel GET-endpoint voor het testen van de server connectie
 app.get('/', (req, res) => {
-    res.send('Virtuagym-Homey Polling Connector is running and polling every 2.5 minutes. Firebase is ' + (db ? 'geïnitialiseerd' : 'niet klaar') + '.');
+    res.send('Virtuagym-Homey Polling Connector is running and polling every 2.5 minutes. LET OP: De 7-dagen rapport tracking is in-memory en reset bij herstart.');
 });
 
 // ENDPOINT VOOR HANDMATIG TESTEN VAN DAGELIJKS TOTAAL
@@ -620,7 +558,6 @@ app.get('/test-daily-report-send', async (req, res) => {
     
     console.log('--- TEST ACTIVERING DAGELIJKS CONTRACT RAPPORT (Gebruikt bezoeken van gisteren) ---');
     
-    // We kunnen hier optioneel de tracking negeren voor een complete test, maar laten we de logica testen:
     await sendExpiringContractsReport(true); 
     
     hasReportBeenSentToday = originalFlag; 
@@ -629,34 +566,27 @@ app.get('/test-daily-report-send', async (req, res) => {
 });
 
 
-// Start de server, Firebase, en de Polling Loops
-async function startServer() {
-    // Start Firebase en Auth EERST
-    await initializeFirebaseAndAuth();
-
-    app.listen(PORT, () => {
-        if (!CLUB_ID || !API_KEY || !CLUB_SECRET) {
-            console.error("\n!!! KRITISCHE FOUT: AUTHENTICATIEVARIABELEN ONTBREEKEN BIJ START !!!");
-            console.error("Zorg ervoor dat CLUB_ID, API_KEY, CLUB_SECRET, HOMEY_URL, HOMEY_DAILY_TOTAL_URL en HOMEY_DAILY_EXPIRING_REPORT_URL zijn ingesteld in de Railway variabelen.");
-            process.exit(1);
-        }
-        
-        console.log(`Virtuagym Polling Service luistert op poort ${PORT}.`);
-        
-        // 1. Individuele check-in polling loop (elke 2,5 minuut)
-        setInterval(pollVirtuagym, POLLING_INTERVAL_MS);
-        pollVirtuagym(); // Eerste aanroep direct starten
-        
-        // 2. Dagelijks Totaal Scheduler (23:59)
-        setInterval(checkDailyTotalSchedule, SCHEDULE_CHECK_INTERVAL_MS);
-        checkDailyTotalSchedule(); // Eerste aanroep direct starten
-        
-        // 3. Contracten Rapport Scheduler (09:00)
-        setInterval(checkMorningReportSchedule, SCHEDULE_CHECK_INTERVAL_MS);
-        checkMorningReportSchedule(); // Eerste aanroep direct starten
-        
-        console.log(`Polling status: Individueel (${POLLING_INTERVAL_MS / 60000} min), Dagelijks Totaal (${DAILY_TOTAL_TIME}), Contracten Rapport (${DAILY_REPORT_TIME}).`);
-    });
-}
-
-startServer();
+// Start de server en de Polling Loops
+app.listen(PORT, () => {
+    if (!CLUB_ID || !API_KEY || !CLUB_SECRET) {
+        console.error("\n!!! KRITISCHE FOUT: AUTHENTICATIEVARIABELEN ONTBREEKEN BIJ START !!!");
+        console.error("Zorg ervoor dat CLUB_ID, API_KEY, CLUB_SECRET, HOMEY_URL, HOMEY_DAILY_TOTAL_URL en HOMEY_DAILY_EXPIRING_REPORT_URL zijn ingesteld in de Railway variabelen.");
+        process.exit(1);
+    }
+    
+    console.log(`Virtuagym Polling Service luistert op poort ${PORT}.`);
+    
+    // 1. Individuele check-in polling loop (elke 2,5 minuut)
+    setInterval(pollVirtuagym, POLLING_INTERVAL_MS);
+    pollVirtuagym(); // Eerste aanroep direct starten
+    
+    // 2. Dagelijks Totaal Scheduler (23:59)
+    setInterval(checkDailyTotalSchedule, SCHEDULE_CHECK_INTERVAL_MS);
+    checkDailyTotalSchedule(); // Eerste aanroep direct starten
+    
+    // 3. Contracten Rapport Scheduler (09:00)
+    setInterval(checkMorningReportSchedule, SCHEDULE_CHECK_INTERVAL_MS);
+    checkMorningReportSchedule(); // Eerste aanroep direct starten
+    
+    console.log(`Polling status: Individueel (${POLLING_INTERVAL_MS / 60000} min), Dagelijks Totaal (${DAILY_TOTAL_TIME}), Contracten Rapport (${DAILY_REPORT_TIME}).`);
+});
