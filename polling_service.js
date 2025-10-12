@@ -10,8 +10,9 @@ const app = express();
 
 // Gebruik de PORT die door de hostingomgeving (Railway) wordt geleverd
 const PORT = process.env.PORT || 3000;
-// Aangepast naar 5 minuten (300.000 ms) om 429 (Too Many Requests) fouten te voorkomen.
-const POLLING_INTERVAL_MS = 300000; // Poll individuele check-ins elke 5 minuten (300.000 ms)
+// *** AANGEPAST: 2 MINUTEN (120.000 ms) voor snellere activering van de verlichting. ***
+// LET OP: Dit verhoogt het risico op Virtuagym API Rate Limits (429 fouten).
+const POLLING_INTERVAL_MS = 120000; 
 const SCHEDULE_CHECK_INTERVAL_MS = 60000; // Controleer elke minuut of de scheduled tijd is bereikt
 
 // Configuratie via Omgevingsvariabelen (MOETEN in Railway worden ingesteld!)
@@ -490,9 +491,10 @@ async function pollVirtuagym() {
     if (isPolling) return; 
     isPolling = true;
 
-    console.log(`--- [POLL START] Polling Virtuagym op ${new Date().toLocaleTimeString()} ---`);
+    console.log(`--- [POLL START] Polling Virtuagym op ${new Date().toLocaleTimeString()} (Interval: ${POLLING_INTERVAL_MS / 1000}s) ---`);
     
     try {
+        // BELANGRIJK: Dit endpoint haalt ALLE succesvolle check-ins op (inclusief 'Voordeur', etc.) sinds de laatste tijdstempel.
         const response = await axios.get(VG_VISITS_BASE_URL, {
             params: {
                 api_key: API_KEY,
@@ -512,7 +514,7 @@ async function pollVirtuagym() {
             // Sorteer om er zeker van te zijn dat de meest recente bovenaan staat
             newVisits.sort((a, b) => b.check_in_timestamp - a.check_in_timestamp);
             
-            // --- NIEUWE LOGICA: VERWERK ALLEEN DE ALLERNIEUWSTE CHECK-IN ---
+            // --- LOGICA: VERWERK ALLEEN DE ALLERNIEUWSTE CHECK-IN (Fix voor dubbele pushberichten) ---
             const latestVisit = newVisits[0];
             const maxTimestamp = latestVisit.check_in_timestamp;
 
@@ -550,7 +552,7 @@ async function pollVirtuagym() {
 
 // Een simpel GET-endpoint voor het testen van de server connectie
 app.get('/', (req, res) => {
-    res.send('Virtuagym-Homey Polling Connector is running and polling every 5 minutes. LET OP: De 7-dagen rapport tracking is in-memory en reset bij herstart.');
+    res.send('Virtuagym-Homey Polling Connector is running and polling every 2 minutes. LET OP: De 7-dagen rapport tracking is in-memory en reset bij herstart.');
 });
 
 // ENDPOINT VOOR HANDMATIG TESTEN VAN DAGELIJKS TOTAAL
@@ -589,7 +591,7 @@ app.listen(PORT, () => {
     
     console.log(`Virtuagym Polling Service luistert op poort ${PORT}.`);
     
-    // 1. Individuele check-in polling loop (elke 5 minuut)
+    // 1. Individuele check-in polling loop (elke 2 minuten)
     setInterval(pollVirtuagym, POLLING_INTERVAL_MS);
     pollVirtuagym(); // Eerste aanroep direct starten
     
