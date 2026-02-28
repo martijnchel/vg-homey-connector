@@ -102,14 +102,19 @@ async function pollVirtuagym() {
             .filter(v => v.check_in_timestamp > latestCheckinTimestamp)
             .sort((a, b) => a.check_in_timestamp - b.check_in_timestamp);
 
-        for (const visit of newVisits) {
-            const memberInfo = await getEnhancedMemberData(visit.member_id);
-            
-            const formattedTime = new Date(visit.check_in_timestamp).toLocaleTimeString('nl-NL', { 
-                hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Amsterdam' 
-            });
+for (const visit of visits) {
+    const memberInfo = await getEnhancedMemberData(visit.member_id);
+    const time = new Date(visit.check_in_timestamp).toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' });
+    
+    // Check of de incheck geweigerd is (Virtuagym gebruikt vaak 'denied' of 'success: false')
+    let errorPrefix = "";
+    if (visit.access_allowed === false || visit.error_code) {
+        errorPrefix = "[X]";
+    }
 
-            const tagValue = `${memberInfo.codes}${formattedTime} - ${memberInfo.name}`;
+    const tagValue = `${errorPrefix}${memberInfo.codes}${time} - ${memberInfo.name}`;
+    // ... rest van de axios.get naar Homey
+}
 
             if (HOMEY_INDIVIDUAL_URL) {
                 await axios.get(`${HOMEY_INDIVIDUAL_URL}?tag=${encodeURIComponent(tagValue)}`);
