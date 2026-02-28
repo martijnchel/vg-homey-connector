@@ -16,24 +16,23 @@ const NEW_MEMBER_THRESHOLD_MS = 30 * 24 * 60 * 60 * 1000;
 
 let latestCheckinTimestamp = Math.floor(Date.now() / 1000); 
 let isPolling = false;
-let coolingDown = false; 
+let coolingDown = false;
 
 async function processCheckin(visit) {
     try {
-        // --- STAP 1: INFO OPHALEN ---
+        // INFO OPHALEN
         const memberRes = await axios.get(`${VG_BASE}/member/${visit.member_id}`, { 
             params: { api_key: API_KEY, club_secret: CLUB_SECRET } 
         });
         const member = Array.isArray(memberRes.data.result) ? memberRes.data.result[0] : memberRes.data.result;
         
-        await new Promise(r => setTimeout(r, 3000)); // 3 sec rust tussen calls
+        await new Promise(r => setTimeout(r, 3000)); // Rust tussen calls
 
         const contractRes = await axios.get(`${VG_BASE}/membership/instance`, { 
             params: { api_key: API_KEY, club_secret: CLUB_SECRET, member_id: visit.member_id, limit: 1 } 
         });
         const contracts = contractRes.data.result || [];
 
-        // --- STAP 2: LOGICA (B, E, N) ---
         const now = new Date();
         let status = "";
         
@@ -62,7 +61,6 @@ async function processCheckin(visit) {
         console.log(`[VERSTUURD] ${tagValue}`);
 
     } catch (e) {
-        console.error(`[FOUT] Lid ${visit.member_id}: ${e.message}`);
         if (e.response && e.response.status === 429) coolingDown = true;
     }
 }
@@ -71,33 +69,42 @@ async function poll() {
     if (isPolling || coolingDown) return;
     isPolling = true;
 
+    console.log(`--- Poll gestart op ${new Date().toLocaleTimeString()} ---`);
+
     try {
         const res = await axios.get(`${VG_BASE}/visits`, { 
             params: { api_key: API_KEY, club_secret: CLUB_SECRET, sync_from: latestCheckinTimestamp } 
         });
         
         const visits = res.data.result || [];
-        const fiveMinutesAgo = Math.floor(Date.now() / 1000) - 300;
+        
+        // DE HARDE MUUR: We accepteren alleen scans van de LAATSTE 4 MINUTEN
+        const fourMinutesAgo = Math.floor(Date.now() / 1000) - 240;
 
-        // HARDE FILTER: Alleen verwerken als het NU is gebeurd
-        const newVisits = visits.filter(v => 
+        const filteredVisits = visits.filter(v => 
             v.check_in_timestamp > latestCheckinTimestamp && 
-            v.check_in_timestamp > fiveMinutesAgo
+            v.check_in_timestamp > fourMinutesAgo
         );
 
-        if (newVisits.length > 0) {
-            newVisits.sort((a, b) => a.check_in_timestamp - b.check_in_timestamp);
-            for (const visit of newVisits) {
+        console.log(`API gaf ${visits.length} scans. Na filter blijven er ${filteredVisits.length} over.`);
+
+        if (filteredVisits.length > 0) {
+            // Sorteer en verwerk
+            filteredVisits.sort((a, b) => a.check_in_timestamp - b.check_in_timestamp);
+            
+            for (const visit of filteredVisits) {
                 await processCheckin(visit);
                 latestCheckinTimestamp = visit.check_in_timestamp;
-                await new Promise(r => setTimeout(r, 3000)); // 3 sec tussen leden
+                await new Promise(r => setTimeout(r, 3000));
             }
         } else {
-            // Als er geen nieuwe waren, update de timestamp wel naar 'nu' om niet in het verleden te blijven hangen
+            // Als er niks nieuws was, zet de timestamp op NU om niet te blijven hangen in het verleden
             latestCheckinTimestamp = Math.floor(Date.now() / 1000);
+            console.log("Geen actuele scans gevonden.");
         }
     } catch (e) {
         if (e.response && e.response.status === 429) {
+            console.warn("429 gedetecteerd. 10 min pauze.");
             coolingDown = true;
             setTimeout(() => { coolingDown = false; }, 600000);
         }
@@ -105,5 +112,8 @@ async function poll() {
     isPolling = false;
 }
 
-app.get('/', (req, res) => res.send('Anti-429 Filter Actief'));
-app.listen(PORT, () => setInterval(poll, POLLING_INTERVAL_MS));
+app.get('/', (req, res) => res.send('Strict Time Filter Active'));
+app.listen(PORT, () => {
+    setInterval(poll, POLLING_INTERVAL_MS);
+    poll();
+});
