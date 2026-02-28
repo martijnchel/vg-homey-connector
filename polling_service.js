@@ -5,132 +5,81 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const POLLING_INTERVAL_MS = 120000; // 2 minuten
 
-// Configuratie via Omgevingsvariabelen
+// Configuratie
 const CLUB_ID = process.env.CLUB_ID;
 const API_KEY = process.env.API_KEY;
 const CLUB_SECRET = process.env.CLUB_SECRET;
 const HOMEY_INDIVIDUAL_URL = process.env.HOMEY_URL; 
 
-// Virtuagym API URL's
 const VG_VISITS_BASE_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/visits`;
 const VG_MEMBER_BASE_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/member`; 
-const VG_MEMBERSHIP_BASE_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/membership/instance`; 
 
-// Constanten voor checks
-const CONTRACT_EXPIRY_THRESHOLD_MS = 4 * 7 * 24 * 60 * 60 * 1000; 
-const NEW_MEMBER_THRESHOLD_MS = 30 * 24 * 60 * 60 * 1000;
-const EXCLUDED_MEMBERSHIP_NAMES = ["Premium Flex", "Student Flex"];
-
-// Start in seconden (Virtuagym formaat) vanaf NU
-let latestCheckinTimestamp = Math.floor(Date.now() / 1000); 
+// STARTWAARDE: Kijk bij opstarten precies 120 seconden terug
+let latestCheckinTimestamp = Math.floor(Date.now() / 1000) - 120; 
 let isPolling = false; 
 
-// =======================================================
-// ONDERSTEUNENDE FUNCTIE: CONTRACT CHECK
-// =======================================================
-async function getExpiringContractDetails(memberId) {
-    try {
-        const now = Date.now();
-        const response = await axios.get(VG_MEMBERSHIP_BASE_URL, {
-            params: { api_key: API_KEY, club_secret: CLUB_SECRET, member_id: memberId, sync_from: 0, limit: 5 }
-        });
-        const memberships = response.data.result || [];
-        const expiring = memberships.find(m => {
-            if (!m.contract_end_date) return false;
-            const endMs = new Date(m.contract_end_date).getTime();
-            return (endMs > now && endMs <= now + CONTRACT_EXPIRY_THRESHOLD_MS && !EXCLUDED_MEMBERSHIP_NAMES.includes(m.membership_name));
-        });
-        return expiring ? expiring.contract_end_date : null;
-    } catch (e) { return null; }
-}
-
-// =======================================================
-// HOOFD WEBHOOK TRIGGER
-// =======================================================
 async function triggerHomeyIndividualWebhook(memberId, checkinTime) {
     if (!HOMEY_INDIVIDUAL_URL) return;
     try {
-        // Haal lid-gegevens en contract-status parallel op
-        const [memberRes, expiringDate] = await Promise.all([
-            axios.get(`${VG_MEMBER_BASE_URL}/${memberId}`, { params: { api_key: API_KEY, club_secret: CLUB_SECRET } }),
-            getExpiringContractDetails(memberId)
-        ]);
+        const memberRes = await axios.get(`${VG_MEMBER_BASE_URL}/${memberId}`, { 
+            params: { api_key: API_KEY, club_secret: CLUB_SECRET } 
+        });
 
         const memberData = Array.isArray(memberRes.data.result) ? memberRes.data.result[0] : memberRes.data.result;
         if (!memberData) return;
 
         const memberName = `${memberData.firstname} ${memberData.lastname || ''}`.trim();
-        const now = new Date();
         
-        // Tijdweergave (checkinTime * 1000 voor milliseconden)
+        // Tijdcorrectie voor Homey (seconden naar milliseconden)
         const amsTimeStr = new Date(checkinTime * 1000).toLocaleTimeString('nl-NL', { 
             hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Amsterdam' 
         });
 
-        // 1. Verjaardag Check
-        let isBirthday = false;
-        if (memberData.birthdate) {
-            const todayStr = now.toLocaleString("nl-NL", {timeZone: "Europe/Amsterdam", day: "2-digit", month: "2-digit"});
-            const birthStr = new Date(memberData.birthdate).toLocaleString("nl-NL", {day: "2-digit", month: "2-digit"});
-            isBirthday = (todayStr === birthStr);
-        }
-
-        // 2. Nieuw Lid Check
-        let isNewMember = false;
-        if (memberData.registration_date) {
-            const regMs = new Date(memberData.registration_date).getTime();
-            isNewMember = (Date.now() - regMs < NEW_MEMBER_THRESHOLD_MS);
-        }
-
-        // 3. Status Codes
-        let statusCodes = "";
-        if (isBirthday) statusCodes += "[B]";
-        if (expiringDate) statusCodes += "[E]";
-        if (isNewMember) statusCodes += "[N]";
-
-        const tagValue = `${statusCodes}${amsTimeStr} - ${memberName}`;
+        const tagValue = `${amsTimeStr} - ${memberName}`;
         
-        // Verstuur naar Homey
         await axios.get(`${HOMEY_INDIVIDUAL_URL}?tag=${encodeURIComponent(tagValue)}`);
         console.log(`[VERSTUURD] ${tagValue}`);
 
     } catch (error) {
-        console.error(`[FOUT] Webhook mislukt voor lid ${memberId}:`, error.message);
+        console.error(`[FOUT] Webhook mislukt:`, error.message);
     }
 }
 
-// =======================================================
-// POLLING LOGICA
-// =======================================================
 async function pollVirtuagym() {
     if (isPolling) return;
     isPolling = true;
     try {
+        // We vragen aan Virtuagym: "Geef alles sinds onze laatste opgeslagen tijdstempel"
         const response = await axios.get(VG_VISITS_BASE_URL, {
-            params: { api_key: API_KEY, club_secret: CLUB_SECRET, sync_from: latestCheckinTimestamp }
+            params: { 
+                api_key: API_KEY, 
+                club_secret: CLUB_SECRET, 
+                sync_from: latestCheckinTimestamp 
+            }
         });
         
         const visits = response.data.result || [];
+        
+        // Filter alleen de écht nieuwe bezoeken
         const newVisits = visits.filter(v => v.check_in_timestamp > latestCheckinTimestamp);
 
         if (newVisits.length > 0) {
-            // Sorteer van oud naar nieuw (belangrijk voor volgorde in Homey)
+            // Sorteer van oud naar nieuw zodat ze in de juiste volgorde in Homey komen
             newVisits.sort((a, b) => a.check_in_timestamp - b.check_in_timestamp);
 
             for (const visit of newVisits) {
-                // Verwerk elke check-in één voor één
                 await triggerHomeyIndividualWebhook(visit.member_id, visit.check_in_timestamp);
                 
-                // Wacht 1 seconde tussen personen om 429 errors (Rate Limit) te voorkomen
-                await new Promise(resolve => setTimeout(resolve, 1000));
-                
-                // Update timestamp na elke succesvolle verwerking
+                // Update de tijdstempel direct na elke verwerkte scan
                 latestCheckinTimestamp = visit.check_in_timestamp;
+                
+                // 1 seconde pauze tussen personen om Virtuagym te vriend te houden (tegen 429 errors)
+                await new Promise(resolve => setTimeout(resolve, 1000));
             }
         }
     } catch (e) { 
         if (e.response && e.response.status === 429) {
-            console.error("429 Fout: Virtuagym blokkeert ons nog. Wacht langer.");
+            console.error("429: Virtuagym blokkeert ons nog. Wacht even met herstarten.");
         } else {
             console.error("Polling error:", e.message); 
         }
@@ -138,12 +87,9 @@ async function pollVirtuagym() {
     isPolling = false;
 }
 
-// =======================================================
-// SERVER START
-// =======================================================
-app.get('/', (req, res) => res.send('Virtuagym Polling Service Actief.'));
+app.get('/', (req, res) => res.send('Polling actief (2 min venster).'));
 
 app.listen(PORT, () => {
-    console.log(`Service gestart op poort ${PORT}`);
+    console.log(`Service gestart. Kijkt terug vanaf: ${new Date(latestCheckinTimestamp * 1000).toLocaleString()}`);
     setInterval(pollVirtuagym, POLLING_INTERVAL_MS);
 });
