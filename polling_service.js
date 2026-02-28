@@ -25,8 +25,8 @@ const CONTRACT_EXPIRY_THRESHOLD_MS = 4 * 7 * 24 * 60 * 60 * 1000; // 4 weken
 const NEW_MEMBER_THRESHOLD_MS = 30 * 24 * 60 * 60 * 1000; // 30 dagen
 const EXCLUDED_MEMBERSHIP_NAMES = ["Premium Flex", "Student Flex"];
 
-// Statusvariabelen - FIX: Gedeeld door 1000 om op seconden uit te komen
-let latestCheckinTimestamp = Math.floor(Date.now() / 1000); 
+// Statusvariabelen
+let latestCheckinTimestamp = Date.now(); 
 let isPolling = false; 
 let hasTotalBeenSentToday = false; 
 let hasReportBeenSentToday = false; 
@@ -58,6 +58,7 @@ async function getExpiringContractDetails(memberId) {
 async function triggerHomeyIndividualWebhook(memberId, checkinTime) {
     if (!HOMEY_INDIVIDUAL_URL) return;
     try {
+        // Haal lid-gegevens en contract-status parallel op
         const [memberRes, expiringDate] = await Promise.all([
             axios.get(`${VG_MEMBER_BASE_URL}/${memberId}`, { params: { api_key: API_KEY, club_secret: CLUB_SECRET } }),
             getExpiringContractDetails(memberId)
@@ -68,12 +69,11 @@ async function triggerHomeyIndividualWebhook(memberId, checkinTime) {
 
         const memberName = `${memberData.firstname} ${memberData.lastname || ''}`.trim();
         const now = new Date();
-        
-        // FIX: checkinTime * 1000 om de juiste tijd weer te geven in Homey
-        const amsTimeStr = new Date(checkinTime * 1000).toLocaleTimeString('nl-NL', { 
+        const amsTimeStr = new Date(checkinTime).toLocaleTimeString('nl-NL', { 
             hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Amsterdam' 
         });
 
+        // 1. Verjaardag Check
         let isBirthday = false;
         if (memberData.birthdate) {
             const todayStr = now.toLocaleString("nl-NL", {timeZone: "Europe/Amsterdam", day: "2-digit", month: "2-digit"});
@@ -81,17 +81,20 @@ async function triggerHomeyIndividualWebhook(memberId, checkinTime) {
             isBirthday = (todayStr === birthStr);
         }
 
+        // 2. Nieuw Lid Check (30 dagen)
         let isNewMember = false;
         if (memberData.registration_date) {
             const regMs = new Date(memberData.registration_date).getTime();
             isNewMember = (Date.now() - regMs < NEW_MEMBER_THRESHOLD_MS);
         }
 
+        // 3. Status Codes bouwen
         let statusCodes = "";
         if (isBirthday) statusCodes += "[B]";
         if (expiringDate) statusCodes += "[E]";
         if (isNewMember) statusCodes += "[N]";
 
+        // De tag die Homey ontvangt, bijv: "[B][N]14:02 - Jan Janssen"
         const tagValue = `${statusCodes}${amsTimeStr} - ${memberName}`;
         
         await axios.get(`${HOMEY_INDIVIDUAL_URL}?tag=${encodeURIComponent(tagValue)}&ts=${checkinTime}`);
@@ -117,17 +120,15 @@ async function pollVirtuagym() {
         const newVisits = visits.filter(v => v.check_in_timestamp > latestCheckinTimestamp);
 
         if (newVisits.length > 0) {
-            // Sorteer van nieuw naar oud en pak de laatste
             newVisits.sort((a, b) => b.check_in_timestamp - a.check_in_timestamp);
             const latestVisit = newVisits[0];
             
+            // Verwerk de nieuwste check-in met alle extra checks
             await triggerHomeyIndividualWebhook(latestVisit.member_id, latestVisit.check_in_timestamp);
             
             latestCheckinTimestamp = latestVisit.check_in_timestamp;
         }
-    } catch (e) { 
-        console.error("Polling error:", e.message); 
-    }
+    } catch (e) { console.error("Polling error:", e.message); }
     isPolling = false;
 }
 
@@ -135,10 +136,12 @@ async function pollVirtuagym() {
 // SERVER START & SCHEDULERS
 // =======================================================
 
-app.get('/', (req, res) => res.send('Virtuagym-Homey Polling Service is actief.'));
+app.get('/', (req, res) => res.send('Virtuagym-Homey Polling Service met Verjaardag/Contract/Nieuw-Lid check is actief.'));
 
 app.listen(PORT, () => {
     console.log(`Service gestart op poort ${PORT}`);
+    // Start polling loop
     setInterval(pollVirtuagym, POLLING_INTERVAL_MS);
+    
     console.log("Polling actief...");
 });
