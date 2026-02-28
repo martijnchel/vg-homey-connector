@@ -46,7 +46,9 @@ async function processMemberStatus(memberId, checkinTime) {
         if (!memberData) return null;
 
         const name = `${memberData.firstname} ${memberData.lastname || ''}`.trim();
-        const timeStr = new Date(checkinTime).toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Amsterdam' });
+        const amsTimeStr = new Date(checkinTime * 1000).toLocaleTimeString('nl-NL', { 
+    hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Amsterdam' 
+});
 
         let codes = "";
         // Verjaardag
