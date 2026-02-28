@@ -3,7 +3,7 @@ const axios = require('axios');
 const app = express();
 
 const PORT = process.env.PORT || 3000;
-const POLLING_INTERVAL_MS = 120000; // 2 minuten (Origineel)
+const POLLING_INTERVAL_MS = 120000; // 2 minuten
 
 // Configuratie via Omgevingsvariabelen
 const CLUB_ID = process.env.CLUB_ID;
@@ -21,7 +21,7 @@ const CONTRACT_EXPIRY_THRESHOLD_MS = 4 * 7 * 24 * 60 * 60 * 1000;
 const NEW_MEMBER_THRESHOLD_MS = 30 * 24 * 60 * 60 * 1000;
 const EXCLUDED_MEMBERSHIP_NAMES = ["Premium Flex", "Student Flex"];
 
-// FIX: Start in seconden (Virtuagym formaat) vanaf NU om 429 errors te voorkomen
+// Start in seconden (Virtuagym formaat) vanaf NU
 let latestCheckinTimestamp = Math.floor(Date.now() / 1000); 
 let isPolling = false; 
 
@@ -62,7 +62,7 @@ async function triggerHomeyIndividualWebhook(memberId, checkinTime) {
         const memberName = `${memberData.firstname} ${memberData.lastname || ''}`.trim();
         const now = new Date();
         
-        // Gebruik de tijdnotatie zoals die voorheen werkte (checkinTime is in seconden)
+        // Tijdweergave (checkinTime * 1000 voor milliseconden)
         const amsTimeStr = new Date(checkinTime * 1000).toLocaleTimeString('nl-NL', { 
             hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Amsterdam' 
         });
@@ -90,11 +90,12 @@ async function triggerHomeyIndividualWebhook(memberId, checkinTime) {
 
         const tagValue = `${statusCodes}${amsTimeStr} - ${memberName}`;
         
+        // Verstuur naar Homey
         await axios.get(`${HOMEY_INDIVIDUAL_URL}?tag=${encodeURIComponent(tagValue)}`);
         console.log(`[VERSTUURD] ${tagValue}`);
 
     } catch (error) {
-        console.error(`[FOUT] Webhook mislukt:`, error.message);
+        console.error(`[FOUT] Webhook mislukt voor lid ${memberId}:`, error.message);
     }
 }
 
@@ -113,16 +114,23 @@ async function pollVirtuagym() {
         const newVisits = visits.filter(v => v.check_in_timestamp > latestCheckinTimestamp);
 
         if (newVisits.length > 0) {
-            // Sorteer van nieuw naar oud en pak de laatste (Originele logica)
-            newVisits.sort((a, b) => b.check_in_timestamp - a.check_in_timestamp);
-            const latestVisit = newVisits[0];
-            
-            await triggerHomeyIndividualWebhook(latestVisit.member_id, latestVisit.check_in_timestamp);
-            latestCheckinTimestamp = latestVisit.check_in_timestamp;
+            // Sorteer van oud naar nieuw (belangrijk voor volgorde in Homey)
+            newVisits.sort((a, b) => a.check_in_timestamp - b.check_in_timestamp);
+
+            for (const visit of newVisits) {
+                // Verwerk elke check-in één voor één
+                await triggerHomeyIndividualWebhook(visit.member_id, visit.check_in_timestamp);
+                
+                // Wacht 1 seconde tussen personen om 429 errors (Rate Limit) te voorkomen
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                // Update timestamp na elke succesvolle verwerking
+                latestCheckinTimestamp = visit.check_in_timestamp;
+            }
         }
     } catch (e) { 
         if (e.response && e.response.status === 429) {
-            console.error("429 Error: Te veel verzoeken. Virtuagym blokkeert ons tijdelijk.");
+            console.error("429 Fout: Virtuagym blokkeert ons nog. Wacht langer.");
         } else {
             console.error("Polling error:", e.message); 
         }
@@ -137,6 +145,5 @@ app.get('/', (req, res) => res.send('Virtuagym Polling Service Actief.'));
 
 app.listen(PORT, () => {
     console.log(`Service gestart op poort ${PORT}`);
-    console.log(`Start-timestamp: ${latestCheckinTimestamp}`);
     setInterval(pollVirtuagym, POLLING_INTERVAL_MS);
 });
