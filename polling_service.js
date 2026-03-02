@@ -3,7 +3,7 @@ const axios = require('axios');
 const app = express();
 
 const PORT = process.env.PORT || 3000;
-const POLLING_INTERVAL_MS = 120000; // 2 minuten
+const POLLING_INTERVAL_MS = 30000; // 30 seconden
 
 const CLUB_ID = process.env.CLUB_ID;
 const API_KEY = process.env.API_KEY;
