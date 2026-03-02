@@ -5,7 +5,6 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const POLLING_INTERVAL_MS = 120000; // 2 minuten
 
-// Zorg dat deze in Railway bij 'Variables' staan:
 const CLUB_ID = process.env.CLUB_ID;
 const API_KEY = process.env.API_KEY;
 const CLUB_SECRET = process.env.CLUB_SECRET;
@@ -70,15 +69,14 @@ async function pollVirtuagym() {
                 hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Amsterdam' 
             });
 
-            // AANPASSING: Alles wat niet expliciet 'true' is, wordt als fout gezien [X]
-            let errorPrefix = visit.access_allowed !== true ? "[X]" : "";
+            // CORRECTIE: We kijken nu naar de officiële 'status' uit de API docs
+            let errorPrefix = visit.status === "rejected" ? "[X]" : "";
             const tagValue = `${errorPrefix}${memberInfo.codes}${time} - ${memberInfo.name}`;
 
             if (HOMEY_INDIVIDUAL_URL) {
-                // Halve seconde pauze tussen verzendingen voor Homey stabiliteit
                 await new Promise(resolve => setTimeout(resolve, 500)); 
                 await axios.get(`${HOMEY_INDIVIDUAL_URL}?tag=${encodeURIComponent(tagValue)}`);
-                console.log(`[RAILWAY] Verzonden naar Homey: ${tagValue}`);
+                console.log(`[RAILWAY] Status: ${visit.status} | Verzonden: ${tagValue}`);
             }
             latestCheckinTimestamp = visit.check_in_timestamp;
         }
