@@ -70,7 +70,8 @@ async function pollVirtuagym() {
                 hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Amsterdam' 
             });
 
-            let errorPrefix = visit.access_allowed === false ? "[X]" : "";
+            // AANPASSING: Alles wat niet expliciet 'true' is, wordt als fout gezien [X]
+            let errorPrefix = visit.access_allowed !== true ? "[X]" : "";
             const tagValue = `${errorPrefix}${memberInfo.codes}${time} - ${memberInfo.name}`;
 
             if (HOMEY_INDIVIDUAL_URL) {
