@@ -19,6 +19,13 @@ const EXCLUDED_MEMBERSHIP_NAMES = ["Premium Flex", "Student Flex"];
 let latestCheckinTimestamp = Date.now(); 
 let isPolling = false; 
 
+// --- NIEUW: Status monitoring variabelen ---
+let virtuagymStatus = { 
+    online: true, 
+    lastUpdate: new Date().toISOString(),
+    error: null 
+};
+
 async function getEnhancedMemberData(memberId) {
     try {
         const res = await axios.get(`${VG_MEMBER_BASE_URL}/${memberId}`, { 
@@ -57,8 +64,15 @@ async function pollVirtuagym() {
     isPolling = true;
     try {
         const response = await axios.get(VG_VISITS_BASE_URL, {
-            params: { api_key: API_KEY, club_secret: CLUB_SECRET, sync_from: latestCheckinTimestamp }
+            params: { api_key: API_KEY, club_secret: CLUB_SECRET, sync_from: latestCheckinTimestamp },
+            timeout: 15000 // 15 seconden timeout om vastlopen te voorkomen
         });
+
+        // --- NIEUW: Als de poll slaagt, zetten we de status op online ---
+        virtuagymStatus.online = true;
+        virtuagymStatus.lastUpdate = new Date().toISOString();
+        virtuagymStatus.error = null;
+
         const visits = (response.data.result || [])
             .filter(v => v.check_in_timestamp > latestCheckinTimestamp)
             .sort((a, b) => a.check_in_timestamp - b.check_in_timestamp);
@@ -69,7 +83,6 @@ async function pollVirtuagym() {
                 hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Amsterdam' 
             });
 
-            // CORRECTIE: We kijken nu naar de officiële 'status' uit de API docs
             let errorPrefix = visit.status === "rejected" ? "[X]" : "";
             const tagValue = `${errorPrefix}${memberInfo.codes}${time} - ${memberInfo.name}`;
 
@@ -80,9 +93,24 @@ async function pollVirtuagym() {
             }
             latestCheckinTimestamp = visit.check_in_timestamp;
         }
-    } catch (e) { console.error("Poll fout:", e.message); }
+    } catch (e) { 
+        console.error("Poll fout:", e.message); 
+        
+        // --- NIEUW: Als de API een serverfout geeft of onbereikbaar is ---
+        // Alleen bij echte downtime (geen internet, 5xx fouten of timeouts) zetten we status op offline
+        if (!e.response || e.response.status >= 500 || e.code === 'ECONNABORTED') {
+            virtuagymStatus.online = false;
+            virtuagymStatus.lastUpdate = new Date().toISOString();
+            virtuagymStatus.error = e.message;
+        }
+    }
     isPolling = false;
 }
+
+// --- NIEUW: Endpoint voor de Gate-check in Homey ---
+app.get('/gate-status', (req, res) => {
+    res.json(virtuagymStatus);
+});
 
 app.get('/test-homey', async (req, res) => {
     const type = req.query.type || 'ben';
