@@ -21,9 +21,9 @@ let isPolling = false;
 
 // --- NIEUW: Status monitoring variabelen ---
 let virtuagymStatus = { 
-    online: true, 
+    online: false, 
     lastUpdate: new Date().toISOString(),
-    error: null 
+    error: "TEST MODUS: HANDMATIGE STORING" 
 };
 
 async function getEnhancedMemberData(memberId) {
