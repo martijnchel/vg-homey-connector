@@ -69,7 +69,9 @@ async function pollVirtuagym() {
         });
 
         // --- NIEUW: Als de poll slaagt, zetten we de status op online ---
-        virtuagymStatus.online = true;
+       // --- TEST MODUS: Forceer offline status ---
+        virtuagymStatus.online = false;
+        virtuagymStatus.error = "HANDMATIGE TEST STORING";
         virtuagymStatus.lastUpdate = new Date().toISOString();
         virtuagymStatus.error = null;
 
