@@ -19,11 +19,11 @@ const EXCLUDED_MEMBERSHIP_NAMES = ["Premium Flex", "Student Flex"];
 let latestCheckinTimestamp = Date.now(); 
 let isPolling = false; 
 
-// --- NIEUW: Status monitoring variabelen ---
+// --- Status monitoring variabelen ---
 let virtuagymStatus = { 
-    online: false, 
+    online: true, 
     lastUpdate: new Date().toISOString(),
-    error: "TEST MODUS: HANDMATIGE STORING" 
+    error: null 
 };
 
 async function getEnhancedMemberData(memberId) {
@@ -65,13 +65,11 @@ async function pollVirtuagym() {
     try {
         const response = await axios.get(VG_VISITS_BASE_URL, {
             params: { api_key: API_KEY, club_secret: CLUB_SECRET, sync_from: latestCheckinTimestamp },
-            timeout: 15000 // 15 seconden timeout om vastlopen te voorkomen
+            timeout: 15000 
         });
 
-        // --- NIEUW: Als de poll slaagt, zetten we de status op online ---
-       // --- TEST MODUS: Forceer offline status ---
-        virtuagymStatus.online = false;
-        virtuagymStatus.error = "HANDMATIGE TEST STORING";
+        // --- STATUS HERSTEL: Zet weer op online bij succesvolle poll ---
+        virtuagymStatus.online = true;
         virtuagymStatus.lastUpdate = new Date().toISOString();
         virtuagymStatus.error = null;
 
@@ -98,8 +96,7 @@ async function pollVirtuagym() {
     } catch (e) { 
         console.error("Poll fout:", e.message); 
         
-        // --- NIEUW: Als de API een serverfout geeft of onbereikbaar is ---
-        // Alleen bij echte downtime (geen internet, 5xx fouten of timeouts) zetten we status op offline
+        // --- STATUS FOUT: Alleen bij echte downtime of timeouts ---
         if (!e.response || e.response.status >= 500 || e.code === 'ECONNABORTED') {
             virtuagymStatus.online = false;
             virtuagymStatus.lastUpdate = new Date().toISOString();
@@ -109,7 +106,7 @@ async function pollVirtuagym() {
     isPolling = false;
 }
 
-// --- NIEUW: Endpoint voor de Gate-check in Homey ---
+// Endpoint voor de Gate-check in Homey
 app.get('/gate-status', (req, res) => {
     res.json(virtuagymStatus);
 });
