@@ -19,6 +19,10 @@ const EXCLUDED_MEMBERSHIP_NAMES = ["Premium Flex", "Student Flex"];
 let latestCheckinTimestamp = Date.now(); 
 let isPolling = false; 
 
+// --- NIEUW: Anti-flap variabelen ---
+let errorCount = 0;
+const MAX_ERROR_THRESHOLD = 3; // Pas na 3 keer fout (1,5 minuut) melding geven
+
 // --- Status monitoring variabelen ---
 let virtuagymStatus = { 
     online: true, 
@@ -68,7 +72,8 @@ async function pollVirtuagym() {
             timeout: 15000 
         });
 
-        // --- STATUS HERSTEL: Zet weer op online bij succesvolle poll ---
+        // --- SUCCES: Reset error count en zet status op online ---
+        errorCount = 0; 
         virtuagymStatus.online = true;
         virtuagymStatus.lastUpdate = new Date().toISOString();
         virtuagymStatus.error = null;
@@ -94,13 +99,18 @@ async function pollVirtuagym() {
             latestCheckinTimestamp = visit.check_in_timestamp;
         }
     } catch (e) { 
-        console.error("Poll fout:", e.message); 
+        console.error(`Poll fout (${errorCount + 1}/${MAX_ERROR_THRESHOLD}):`, e.message); 
         
-        // --- STATUS FOUT: Alleen bij echte downtime of timeouts ---
-        if (!e.response || e.response.status >= 500 || e.code === 'ECONNABORTED') {
-            virtuagymStatus.online = false;
-            virtuagymStatus.lastUpdate = new Date().toISOString();
-            virtuagymStatus.error = e.message;
+        // --- FOUT: Tel op en pas status pas aan na threshold ---
+        if (!e.response || e.response.status >= 500 || e.code === 'ECONNABORTED' || e.code === 'ENOTFOUND') {
+            errorCount++;
+            
+            if (errorCount >= MAX_ERROR_THRESHOLD) {
+                virtuagymStatus.online = false;
+                virtuagymStatus.lastUpdate = new Date().toISOString();
+                virtuagymStatus.error = e.message;
+                console.warn("[RAILWAY] Kritieke downtime: Status op OFFLINE gezet.");
+            }
         }
     }
     isPolling = false;
