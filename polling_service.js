@@ -19,9 +19,9 @@ const EXCLUDED_MEMBERSHIP_NAMES = ["Premium Flex", "Student Flex"];
 let latestCheckinTimestamp = Date.now(); 
 let isPolling = false; 
 
-// --- NIEUW: Anti-flap variabelen ---
+// --- NIEUW: Anti-flap variabelen (Aangepast naar 4) ---
 let errorCount = 0;
-const MAX_ERROR_THRESHOLD = 3; // Pas na 3 keer fout (1,5 minuut) melding geven
+const MAX_ERROR_THRESHOLD = 4; // Pas na 4 keer fout melding geven
 
 // --- Status monitoring variabelen ---
 let virtuagymStatus = { 
