@@ -19,9 +19,9 @@ const EXCLUDED_MEMBERSHIP_NAMES = ["Premium Flex", "Student Flex"];
 let latestCheckinTimestamp = Date.now(); 
 let isPolling = false; 
 
-// --- NIEUW: Anti-flap variabelen (Aangepast naar 4) ---
+// --- ANTI-FLAP: Terug naar 3 (ca. 60-75 seconden vertraging) ---
 let errorCount = 0;
-const MAX_ERROR_THRESHOLD = 4; // Pas na 4 keer fout melding geven
+const MAX_ERROR_THRESHOLD = 3; 
 
 // --- Status monitoring variabelen ---
 let virtuagymStatus = { 
@@ -72,7 +72,7 @@ async function pollVirtuagym() {
             timeout: 15000 
         });
 
-        // --- SUCCES: Reset error count en zet status op online ---
+        // --- SUCCES: Reset error count ---
         errorCount = 0; 
         virtuagymStatus.online = true;
         virtuagymStatus.lastUpdate = new Date().toISOString();
@@ -101,7 +101,6 @@ async function pollVirtuagym() {
     } catch (e) { 
         console.error(`Poll fout (${errorCount + 1}/${MAX_ERROR_THRESHOLD}):`, e.message); 
         
-        // --- FOUT: Tel op en pas status pas aan na threshold ---
         if (!e.response || e.response.status >= 500 || e.code === 'ECONNABORTED' || e.code === 'ENOTFOUND') {
             errorCount++;
             
@@ -109,7 +108,7 @@ async function pollVirtuagym() {
                 virtuagymStatus.online = false;
                 virtuagymStatus.lastUpdate = new Date().toISOString();
                 virtuagymStatus.error = e.message;
-                console.warn("[RAILWAY] Kritieke downtime: Status op OFFLINE gezet.");
+                console.warn("[RAILWAY] Kritieke downtime gedetecteerd.");
             }
         }
     }
