@@ -3,7 +3,7 @@ const axios = require('axios');
 const app = express();
 
 const PORT = process.env.PORT || 3000;
-const POLLING_INTERVAL_MS = 30000;
+const POLLING_INTERVAL_MS = 30000; // 30 seconden
 
 const CLUB_ID = process.env.CLUB_ID;
 const API_KEY = process.env.API_KEY;
@@ -18,9 +18,12 @@ const EXCLUDED_MEMBERSHIP_NAMES = ["Premium Flex", "Student Flex"];
 
 let latestCheckinTimestamp = Date.now(); 
 let isPolling = false; 
+
+// --- ANTI-FLAP: 3 keer (ca. 60-75 seconden vertraging) ---
 let errorCount = 0;
 const MAX_ERROR_THRESHOLD = 3; 
 
+// --- Status monitoring variabelen ---
 let virtuagymStatus = { 
     online: true, 
     lastUpdate: new Date().toISOString(),
@@ -29,8 +32,13 @@ let virtuagymStatus = {
 
 async function getEnhancedMemberData(memberId) {
     try {
+        // We vragen om extra velden en lidmaatschappen om de add-ons te vinden
         const res = await axios.get(`${VG_MEMBER_BASE_URL}/${memberId}`, { 
-            params: { api_key: API_KEY, club_secret: CLUB_SECRET, with: 'active_memberships,options' } 
+            params: { 
+                api_key: API_KEY, 
+                club_secret: CLUB_SECRET, 
+                with: 'active_memberships,custom_fields' 
+            } 
         });
         
         let data = res.data.result;
@@ -41,40 +49,37 @@ async function getEnhancedMemberData(memberId) {
         const nu = new Date();
         const fullName = `${data.firstname} ${data.lastname || ''}`.trim();
 
+        // 1. Verjaardag check
         if (data.birthday) {
             const bday = new Date(data.birthday);
             if (bday.getDate() === nu.getDate() && bday.getMonth() === nu.getMonth()) codes.B = "[B]";
         }
+
+        // 2. Nieuw lid check
         if (data.member_since) {
             let regTime = (typeof data.member_since === 'string') ? new Date(data.member_since).getTime() : data.member_since;
             if (Date.now() - regTime < (30 * 24 * 60 * 60 * 1000)) codes.N = "[N]";
         }
 
-        const allMemberships = [
-            ...(data.memberships || []),
-            ...(data.options || [])
-        ];
-
-        // --- DEBUG LOGGING ---
-        // Hiermee zie je in Railway exact wat de namen zijn
-        const namen = allMemberships.map(m => m.membership_name || m.name || "Geen naam");
-        console.log(`[DEBUG] Lid: ${fullName} | Lidmaatschappen gevonden: ${namen.join(', ')}`);
-
-        if (allMemberships.length > 0) {
-            const expiring = allMemberships.find(m => {
+        // 3. Aflopend contract check
+        if (data.memberships && Array.isArray(data.memberships)) {
+            const expiring = data.memberships.find(m => {
                 if (!m.contract_end_date || m.active === 0) return false;
                 const endMs = new Date(m.contract_end_date).getTime();
                 return endMs > Date.now() && endMs <= (Date.now() + CONTRACT_EXPIRY_THRESHOLD_MS) && !EXCLUDED_MEMBERSHIP_NAMES.includes(m.membership_name);
             });
             if (expiring) codes.E = "[E]";
+        }
 
-            // We zoeken nu heel breed: alles wat 'bio' bevat
-            const hasBiocircuit = allMemberships.some(m => {
-                const n = (m.membership_name || m.name || "").toLowerCase();
-                return m.active === 1 && n.includes("bio");
-            });
-            
-            if (hasBiocircuit) codes.BIO = "[BIO]";
+        // 4. Biocircuit check (BREED ZOEKEN)
+        // We zetten de hele data-object om in tekst om te zien of 'biocircuit' ergens voorkomt
+        const allDataString = JSON.stringify(data).toLowerCase();
+        
+        if (allDataString.includes("biocircuit")) {
+            codes.BIO = "[BIO]";
+        } else {
+            // Debug log als het NIET gevonden wordt, zodat we in Railway kunnen speuren
+            console.log(`[DEBUG] Biocircuit NIET gevonden voor ${fullName}. Beschikbare data: ${allDataString.substring(0, 500)}...`);
         }
         
         return { name: fullName, codes: `${codes.B}${codes.E}${codes.N}${codes.BIO}` };
@@ -125,6 +130,7 @@ async function pollVirtuagym() {
                 virtuagymStatus.online = false;
                 virtuagymStatus.lastUpdate = new Date().toISOString();
                 virtuagymStatus.error = e.message;
+                console.warn("[RAILWAY] Kritieke downtime gedetecteerd.");
             }
         }
     }
@@ -132,12 +138,14 @@ async function pollVirtuagym() {
 }
 
 app.get('/gate-status', (req, res) => res.json(virtuagymStatus));
+
 app.get('/test-homey', async (req, res) => {
     const time = new Date().toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' });
     const tag = `[BIO]${time} - Test Lid`;
     if (HOMEY_INDIVIDUAL_URL) await axios.get(`${HOMEY_INDIVIDUAL_URL}?tag=${encodeURIComponent(tag)}`);
     res.send("Test verstuurd: " + tag);
 });
+
 app.get('/', (req, res) => res.send('Virtuagym Connector is online.'));
 
 app.listen(PORT, () => {
