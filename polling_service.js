@@ -29,7 +29,6 @@ let virtuagymStatus = {
 
 async function getEnhancedMemberData(memberId) {
     try {
-        // We voegen 'options' toe aan de 'with' parameter voor de zekerheid
         const res = await axios.get(`${VG_MEMBER_BASE_URL}/${memberId}`, { 
             params: { api_key: API_KEY, club_secret: CLUB_SECRET, with: 'active_memberships,options' } 
         });
@@ -51,14 +50,17 @@ async function getEnhancedMemberData(memberId) {
             if (Date.now() - regTime < (30 * 24 * 60 * 60 * 1000)) codes.N = "[N]";
         }
 
-        // Check memberships AND options (sommige add-ons staan in 'options')
         const allMemberships = [
             ...(data.memberships || []),
             ...(data.options || [])
         ];
 
+        // --- DEBUG LOGGING ---
+        // Hiermee zie je in Railway exact wat de namen zijn
+        const namen = allMemberships.map(m => m.membership_name || m.name || "Geen naam");
+        console.log(`[DEBUG] Lid: ${fullName} | Lidmaatschappen gevonden: ${namen.join(', ')}`);
+
         if (allMemberships.length > 0) {
-            // 1. Check voor Expiring (E)
             const expiring = allMemberships.find(m => {
                 if (!m.contract_end_date || m.active === 0) return false;
                 const endMs = new Date(m.contract_end_date).getTime();
@@ -66,11 +68,10 @@ async function getEnhancedMemberData(memberId) {
             });
             if (expiring) codes.E = "[E]";
 
-            // 2. Check voor Biocircuit (BIO)
-            // We loggen de namen even naar de console zodat je in Railway kunt zien wat er binnenkomt
+            // We zoeken nu heel breed: alles wat 'bio' bevat
             const hasBiocircuit = allMemberships.some(m => {
-                const name = (m.membership_name || m.name || "").toLowerCase();
-                return m.active === 1 && name.includes("biocircuit");
+                const n = (m.membership_name || m.name || "").toLowerCase();
+                return m.active === 1 && n.includes("bio");
             });
             
             if (hasBiocircuit) codes.BIO = "[BIO]";
