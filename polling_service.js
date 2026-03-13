@@ -19,7 +19,7 @@ const EXCLUDED_MEMBERSHIP_NAMES = ["Premium Flex", "Student Flex"];
 let latestCheckinTimestamp = Date.now(); 
 let isPolling = false; 
 
-// --- ANTI-FLAP: 3 keer (ca. 60-75 seconden vertraging) ---
+// --- ANTI-FLAP: Terug naar 3 (ca. 60-75 seconden vertraging) ---
 let errorCount = 0;
 const MAX_ERROR_THRESHOLD = 3; 
 
@@ -32,36 +32,25 @@ let virtuagymStatus = {
 
 async function getEnhancedMemberData(memberId) {
     try {
-        // We vragen om extra velden en lidmaatschappen om de add-ons te vinden
         const res = await axios.get(`${VG_MEMBER_BASE_URL}/${memberId}`, { 
-            params: { 
-                api_key: API_KEY, 
-                club_secret: CLUB_SECRET, 
-                with: 'active_memberships,custom_fields' 
-            } 
+            params: { api_key: API_KEY, club_secret: CLUB_SECRET, with: 'active_memberships' } 
         });
-        
         let data = res.data.result;
         if (Array.isArray(data)) data = data[0];
         if (!data) return { name: `Lid ${memberId}`, codes: "" };
 
-        let codes = { B: "", E: "", N: "", BIO: "" };
+        let codes = { B: "", E: "", N: "" };
         const nu = new Date();
         const fullName = `${data.firstname} ${data.lastname || ''}`.trim();
 
-        // 1. Verjaardag check
         if (data.birthday) {
             const bday = new Date(data.birthday);
             if (bday.getDate() === nu.getDate() && bday.getMonth() === nu.getMonth()) codes.B = "[B]";
         }
-
-        // 2. Nieuw lid check
         if (data.member_since) {
             let regTime = (typeof data.member_since === 'string') ? new Date(data.member_since).getTime() : data.member_since;
             if (Date.now() - regTime < (30 * 24 * 60 * 60 * 1000)) codes.N = "[N]";
         }
-
-        // 3. Aflopend contract check
         if (data.memberships && Array.isArray(data.memberships)) {
             const expiring = data.memberships.find(m => {
                 if (!m.contract_end_date || m.active === 0) return false;
@@ -70,22 +59,8 @@ async function getEnhancedMemberData(memberId) {
             });
             if (expiring) codes.E = "[E]";
         }
-
-        // 4. Biocircuit check (BREED ZOEKEN)
-        // We zetten de hele data-object om in tekst om te zien of 'biocircuit' ergens voorkomt
-        const allDataString = JSON.stringify(data).toLowerCase();
-        
-        if (allDataString.includes("biocircuit")) {
-            codes.BIO = "[BIO]";
-        } else {
-            // Debug log als het NIET gevonden wordt, zodat we in Railway kunnen speuren
-            console.log(`[DEBUG] Biocircuit NIET gevonden voor ${fullName}. Beschikbare data: ${allDataString.substring(0, 500)}...`);
-        }
-        
-        return { name: fullName, codes: `${codes.B}${codes.E}${codes.N}${codes.BIO}` };
-    } catch (e) { 
-        return { name: `Lid ${memberId}`, codes: "" }; 
-    }
+        return { name: fullName, codes: `${codes.B}${codes.E}${codes.N}` };
+    } catch (e) { return { name: `Lid ${memberId}`, codes: "" }; }
 }
 
 async function pollVirtuagym() {
@@ -97,6 +72,7 @@ async function pollVirtuagym() {
             timeout: 15000 
         });
 
+        // --- SUCCES: Reset error count ---
         errorCount = 0; 
         virtuagymStatus.online = true;
         virtuagymStatus.lastUpdate = new Date().toISOString();
@@ -118,14 +94,16 @@ async function pollVirtuagym() {
             if (HOMEY_INDIVIDUAL_URL) {
                 await new Promise(resolve => setTimeout(resolve, 500)); 
                 await axios.get(`${HOMEY_INDIVIDUAL_URL}?tag=${encodeURIComponent(tagValue)}`);
-                console.log(`[RAILWAY] Verzonden: ${tagValue}`);
+                console.log(`[RAILWAY] Status: ${visit.status} | Verzonden: ${tagValue}`);
             }
             latestCheckinTimestamp = visit.check_in_timestamp;
         }
     } catch (e) { 
         console.error(`Poll fout (${errorCount + 1}/${MAX_ERROR_THRESHOLD}):`, e.message); 
+        
         if (!e.response || e.response.status >= 500 || e.code === 'ECONNABORTED' || e.code === 'ENOTFOUND') {
             errorCount++;
+            
             if (errorCount >= MAX_ERROR_THRESHOLD) {
                 virtuagymStatus.online = false;
                 virtuagymStatus.lastUpdate = new Date().toISOString();
@@ -137,11 +115,16 @@ async function pollVirtuagym() {
     isPolling = false;
 }
 
-app.get('/gate-status', (req, res) => res.json(virtuagymStatus));
+// Endpoint voor de Gate-check in Homey
+app.get('/gate-status', (req, res) => {
+    res.json(virtuagymStatus);
+});
 
 app.get('/test-homey', async (req, res) => {
+    const type = req.query.type || 'ben';
     const time = new Date().toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' });
-    const tag = `[BIO]${time} - Test Lid`;
+    let codes = type === 'x' ? "[X]" : type === 'ben' ? "[B][E][N]" : type === 'b' ? "[B]" : "";
+    const tag = `${codes}${time} - Test Lid`;
     if (HOMEY_INDIVIDUAL_URL) await axios.get(`${HOMEY_INDIVIDUAL_URL}?tag=${encodeURIComponent(tag)}`);
     res.send("Test verstuurd: " + tag);
 });
