@@ -39,7 +39,7 @@ async function getEnhancedMemberData(memberId) {
         if (Array.isArray(data)) data = data[0];
         if (!data) return { name: `Lid ${memberId}`, codes: "" };
 
-        let codes = { B: "", E: "", N: "" };
+        let codes = { B: "", E: "", N: "", BIO: "" }; // BIO toegevoegd
         const nu = new Date();
         const fullName = `${data.firstname} ${data.lastname || ''}`.trim();
 
@@ -52,14 +52,23 @@ async function getEnhancedMemberData(memberId) {
             if (Date.now() - regTime < (30 * 24 * 60 * 60 * 1000)) codes.N = "[N]";
         }
         if (data.memberships && Array.isArray(data.memberships)) {
+            // Check voor aflopende contracten
             const expiring = data.memberships.find(m => {
                 if (!m.contract_end_date || m.active === 0) return false;
                 const endMs = new Date(m.contract_end_date).getTime();
                 return endMs > Date.now() && endMs <= (Date.now() + CONTRACT_EXPIRY_THRESHOLD_MS) && !EXCLUDED_MEMBERSHIP_NAMES.includes(m.membership_name);
             });
             if (expiring) codes.E = "[E]";
+
+            // NIEUW: Check specifiek voor Biocircuit add-on
+            const hasBiocircuit = data.memberships.some(m => 
+                m.active === 1 && m.membership_name.toLowerCase().includes("biocircuit")
+            );
+            if (hasBiocircuit) codes.BIO = "[BIO]";
         }
-        return { name: fullName, codes: `${codes.B}${codes.E}${codes.N}` };
+        
+        // De codes worden nu achter elkaar geplakt: [B][E][N][BIO]
+        return { name: fullName, codes: `${codes.B}${codes.E}${codes.N}${codes.BIO}` };
     } catch (e) { return { name: `Lid ${memberId}`, codes: "" }; }
 }
 
@@ -123,7 +132,7 @@ app.get('/gate-status', (req, res) => {
 app.get('/test-homey', async (req, res) => {
     const type = req.query.type || 'ben';
     const time = new Date().toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' });
-    let codes = type === 'x' ? "[X]" : type === 'ben' ? "[B][E][N]" : type === 'b' ? "[B]" : "";
+    let codes = type === 'x' ? "[X]" : type === 'ben' ? "[B][E][N][BIO]" : type === 'b' ? "[B]" : "";
     const tag = `${codes}${time} - Test Lid`;
     if (HOMEY_INDIVIDUAL_URL) await axios.get(`${HOMEY_INDIVIDUAL_URL}?tag=${encodeURIComponent(tag)}`);
     res.send("Test verstuurd: " + tag);
