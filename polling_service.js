@@ -1,14 +1,19 @@
 const express = require('express');
 const axios = require('axios');
+const schedule = require('node-schedule'); // VERGEET NIET: toevoegen aan package.json
 const app = express();
 
 const PORT = process.env.PORT || 3000;
-const POLLING_INTERVAL_MS = 30000; // 30 seconden
+const POLLING_INTERVAL_MS = 30000; 
 
 const CLUB_ID = process.env.CLUB_ID;
 const API_KEY = process.env.API_KEY;
 const CLUB_SECRET = process.env.CLUB_SECRET;
 const HOMEY_INDIVIDUAL_URL = process.env.HOMEY_URL; 
+
+// --- NIEUWE CONFIGURATIE VOOR RETENTIE ---
+const RETENTION_WEBHOOK_URL = "JOUW_NIEUWE_MAKE_WEBHOOK_URL"; 
+const TARGET_MEMBERSHIPS = ["Focus", "Premium"]; 
 
 const VG_VISITS_BASE_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/visits`;
 const VG_MEMBER_BASE_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/member`; 
@@ -18,18 +23,68 @@ const EXCLUDED_MEMBERSHIP_NAMES = ["Premium Flex", "Student Flex"];
 
 let latestCheckinTimestamp = Date.now(); 
 let isPolling = false; 
-
-// --- ANTI-FLAP: Terug naar 3 (ca. 60-75 seconden vertraging) ---
 let errorCount = 0;
 const MAX_ERROR_THRESHOLD = 3; 
 
-// --- Status monitoring variabelen ---
 let virtuagymStatus = { 
     online: true, 
     lastUpdate: new Date().toISOString(),
     error: null 
 };
 
+// --- RETENTIE LOGICA FUNCTIE ---
+async function runRetentionCheck() {
+    console.log("[RETENTIE] Start dagelijkse controle op inactieve leden...");
+    const drieMaandenGeleden = Date.now() - (90 * 24 * 60 * 60 * 1000);
+
+    try {
+        const res = await axios.get(VG_MEMBER_BASE_URL, {
+            params: { api_key: API_KEY, club_secret: CLUB_SECRET, with: 'active_memberships' }
+        });
+
+        const members = res.data.result || [];
+        let foundCount = 0;
+
+        for (const m of members) {
+            if (m.active !== 1) continue;
+
+            const lastVisit = m.last_visit ? new Date(m.last_visit).getTime() : 0;
+            // Check: Heeft ooit bezocht, maar langer dan 90 dagen geleden
+            if (lastVisit === 0 || lastVisit > drieMaandenGeleden) continue;
+
+            const isTarget = m.memberships?.some(ms => 
+                ms.active === 1 && 
+                TARGET_MEMBERSHIPS.some(t => ms.membership_name.includes(t)) &&
+                !ms.membership_name.toLowerCase().includes("flex")
+            );
+
+            if (isTarget) {
+                // Telefoonnummer opschonen naar 316...
+                let rawPhone = m.mobile || m.phone || "";
+                let cleanPhone = rawPhone.replace(/\D/g, ''); 
+                if (cleanPhone.startsWith('06')) cleanPhone = '31' + cleanPhone.substring(1);
+                else if (cleanPhone.startsWith('00316')) cleanPhone = cleanPhone.substring(2);
+                else if (cleanPhone.startsWith('3106')) cleanPhone = '316' + cleanPhone.substring(4);
+
+                if (cleanPhone.length >= 10) {
+                    foundCount++;
+                    await axios.post(RETENTION_WEBHOOK_URL, {
+                        event: "retention_90_days",
+                        member_id: m.member_id,
+                        firstname: m.firstname,
+                        phone: cleanPhone,
+                        last_visit: m.last_visit
+                    }).catch(err => console.error(`Webhook error voor ${m.firstname}:`, err.message));
+                }
+            }
+        }
+        console.log(`[RETENTIE] Controle voltooid. ${foundCount} leden doorgegeven aan Make.`);
+    } catch (e) {
+        console.error("[RETENTIE] Kritieke fout bij scan:", e.message);
+    }
+}
+
+// --- BESTAANDE CHECK-IN LOGICA ---
 async function getEnhancedMemberData(memberId) {
     try {
         const res = await axios.get(`${VG_MEMBER_BASE_URL}/${memberId}`, { 
@@ -72,7 +127,6 @@ async function pollVirtuagym() {
             timeout: 15000 
         });
 
-        // --- SUCCES: Reset error count ---
         errorCount = 0; 
         virtuagymStatus.online = true;
         virtuagymStatus.lastUpdate = new Date().toISOString();
@@ -94,45 +148,38 @@ async function pollVirtuagym() {
             if (HOMEY_INDIVIDUAL_URL) {
                 await new Promise(resolve => setTimeout(resolve, 500)); 
                 await axios.get(`${HOMEY_INDIVIDUAL_URL}?tag=${encodeURIComponent(tagValue)}`);
-                console.log(`[RAILWAY] Status: ${visit.status} | Verzonden: ${tagValue}`);
+                console.log(`[RAILWAY] Scan: ${memberInfo.name} | Status: ${visit.status}`);
             }
             latestCheckinTimestamp = visit.check_in_timestamp;
         }
     } catch (e) { 
-        console.error(`Poll fout (${errorCount + 1}/${MAX_ERROR_THRESHOLD}):`, e.message); 
-        
-        if (!e.response || e.response.status >= 500 || e.code === 'ECONNABORTED' || e.code === 'ENOTFOUND') {
+        console.error(`Poll fout: ${e.message}`); 
+        if (!e.response || e.response.status >= 500) {
             errorCount++;
-            
-            if (errorCount >= MAX_ERROR_THRESHOLD) {
-                virtuagymStatus.online = false;
-                virtuagymStatus.lastUpdate = new Date().toISOString();
-                virtuagymStatus.error = e.message;
-                console.warn("[RAILWAY] Kritieke downtime gedetecteerd.");
-            }
+            if (errorCount >= MAX_ERROR_THRESHOLD) virtuagymStatus.online = false;
         }
     }
     isPolling = false;
 }
 
-// Endpoint voor de Gate-check in Homey
-app.get('/gate-status', (req, res) => {
-    res.json(virtuagymStatus);
+// --- ENDPOINTS ---
+app.get('/gate-status', (req, res) => res.json(virtuagymStatus));
+
+app.get('/test-retention', async (req, res) => {
+    runRetentionCheck();
+    res.send("Retentie scan handmatig gestart. Check de Railway logs!");
 });
 
-app.get('/test-homey', async (req, res) => {
-    const type = req.query.type || 'ben';
-    const time = new Date().toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' });
-    let codes = type === 'x' ? "[X]" : type === 'ben' ? "[B][E][N]" : type === 'b' ? "[B]" : "";
-    const tag = `${codes}${time} - Test Lid`;
-    if (HOMEY_INDIVIDUAL_URL) await axios.get(`${HOMEY_INDIVIDUAL_URL}?tag=${encodeURIComponent(tag)}`);
-    res.send("Test verstuurd: " + tag);
-});
-
-app.get('/', (req, res) => res.send('Virtuagym Connector is online.'));
+app.get('/', (req, res) => res.send('YVSPORT Connector is online.'));
 
 app.listen(PORT, () => {
     console.log(`Server draait op poort ${PORT}`);
+    
+    // Check-in interval (elke 30 sec)
     setInterval(pollVirtuagym, POLLING_INTERVAL_MS);
+    
+    // Retentie interval (elke dag om 10:00 uur)
+    schedule.scheduleJob('0 10 * * *', runRetentionCheck);
+    
     pollVirtuagym();
 });
