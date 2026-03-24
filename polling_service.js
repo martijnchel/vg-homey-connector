@@ -1,6 +1,6 @@
 const express = require('express');
 const axios = require('axios');
-const schedule = require('node-schedule'); // VERGEET NIET: toevoegen aan package.json
+const schedule = require('node-schedule');
 const app = express();
 
 const PORT = process.env.PORT || 3000;
@@ -11,9 +11,9 @@ const API_KEY = process.env.API_KEY;
 const CLUB_SECRET = process.env.CLUB_SECRET;
 const HOMEY_INDIVIDUAL_URL = process.env.HOMEY_URL; 
 
-// --- NIEUWE CONFIGURATIE VOOR RETENTIE ---
+// --- RETENTIE CONFIGURATIE ---
 const RETENTION_WEBHOOK_URL = "JOUW_NIEUWE_MAKE_WEBHOOK_URL"; 
-const TARGET_MEMBERSHIPS = ["Focus", "Premium"]; 
+const TARGET_MEMBERSHIPS = ["Premium Complete", "Premium Focus"]; 
 
 const VG_VISITS_BASE_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/visits`;
 const VG_MEMBER_BASE_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/member`; 
@@ -34,8 +34,10 @@ let virtuagymStatus = {
 
 // --- RETENTIE LOGICA FUNCTIE ---
 async function runRetentionCheck() {
-    console.log("[RETENTIE] Start dagelijkse controle op inactieve leden...");
-    const drieMaandenGeleden = Date.now() - (90 * 24 * 60 * 60 * 1000);
+    console.log("[RETENTIE] Start controle op inactieve leden...");
+    const drieMaandenInMs = 90 * 24 * 60 * 60 * 1000;
+    const nu = Date.now();
+    const grensDatum = nu - drieMaandenInMs;
 
     try {
         const res = await axios.get(VG_MEMBER_BASE_URL, {
@@ -44,47 +46,64 @@ async function runRetentionCheck() {
 
         const members = res.data.result || [];
         let foundCount = 0;
+        let skippedCount = 0;
+
+        console.log(`[RETENTIE] Totaal opgehaald uit VG: ${members.length} leden.`);
 
         for (const m of members) {
+            // 1. Alleen actieve leden
             if (m.active !== 1) continue;
 
-            const lastVisit = m.last_visit ? new Date(m.last_visit).getTime() : 0;
-            // Check: Heeft ooit bezocht, maar langer dan 90 dagen geleden
-            if (lastVisit === 0 || lastVisit > drieMaandenGeleden) continue;
+            // 2. Datum check: parse last_visit
+            let lastVisitTs = 0;
+            if (m.last_visit) {
+                lastVisitTs = new Date(m.last_visit).getTime();
+            }
 
-            const isTarget = m.memberships?.some(ms => 
-                ms.active === 1 && 
-                TARGET_MEMBERSHIPS.some(t => ms.membership_name.includes(t)) &&
-                !ms.membership_name.toLowerCase().includes("flex")
-            );
+            // Check: Is het lid langer dan 90 dagen niet geweest?
+            // (We nemen ook leden mee die nog NOOIT zijn geweest: lastVisitTs === 0)
+            const isInactief = (lastVisitTs === 0 || lastVisitTs < grensDatum);
 
-            if (isTarget) {
-                // Telefoonnummer opschonen naar 316...
-                let rawPhone = m.mobile || m.phone || "";
-                let cleanPhone = rawPhone.replace(/\D/g, ''); 
-                if (cleanPhone.startsWith('06')) cleanPhone = '31' + cleanPhone.substring(1);
-                else if (cleanPhone.startsWith('00316')) cleanPhone = cleanPhone.substring(2);
-                else if (cleanPhone.startsWith('3106')) cleanPhone = '316' + cleanPhone.substring(4);
+            if (isInactief) {
+                // 3. Abonnement check: Bevat de naam 'Premium Complete' of 'Premium Focus'?
+                const activeMemberships = m.memberships || [];
+                const hasTargetContract = activeMemberships.some(ms => 
+                    ms.active === 1 && 
+                    TARGET_MEMBERSHIPS.some(target => ms.membership_name.includes(target))
+                );
 
-                if (cleanPhone.length >= 10) {
-                    foundCount++;
-                    await axios.post(RETENTION_WEBHOOK_URL, {
-                        event: "retention_90_days",
-                        member_id: m.member_id,
-                        firstname: m.firstname,
-                        phone: cleanPhone,
-                        last_visit: m.last_visit
-                    }).catch(err => console.error(`Webhook error voor ${m.firstname}:`, err.message));
+                if (hasTargetContract) {
+                    // 4. Telefoonnummer opschonen naar 316...
+                    let rawPhone = m.mobile || m.phone || "";
+                    let cleanPhone = rawPhone.replace(/\D/g, ''); 
+                    if (cleanPhone.startsWith('06')) cleanPhone = '31' + cleanPhone.substring(1);
+                    else if (cleanPhone.startsWith('00316')) cleanPhone = cleanPhone.substring(2);
+                    else if (cleanPhone.startsWith('3106')) cleanPhone = '316' + cleanPhone.substring(4);
+
+                    if (cleanPhone.length >= 10) {
+                        foundCount++;
+                        await axios.post(RETENTION_WEBHOOK_URL, {
+                            event: "retention_90_days",
+                            member_id: m.member_id,
+                            firstname: m.firstname,
+                            phone: cleanPhone,
+                            last_visit: m.last_visit || "Nooit"
+                        }).catch(err => console.error(`Webhook error voor ${m.firstname}:`, err.message));
+                        
+                        console.log(`[RETENTIE] MATCH: ${m.firstname} (Laatst: ${m.last_visit || 'Nooit'}) -> Verstuurd naar Make.`);
+                    }
+                } else {
+                    skippedCount++;
                 }
             }
         }
-        console.log(`[RETENTIE] Controle voltooid. ${foundCount} leden doorgegeven aan Make.`);
+        console.log(`[RETENTIE] Klaar. Gevonden: ${foundCount}, Overslagen (ander abonnement): ${skippedCount}`);
     } catch (e) {
         console.error("[RETENTIE] Kritieke fout bij scan:", e.message);
     }
 }
 
-// --- BESTAANDE CHECK-IN LOGICA ---
+// --- BESTAANDE CHECK-IN LOGICA (ONGEWIJZIGD) ---
 async function getEnhancedMemberData(memberId) {
     try {
         const res = await axios.get(`${VG_MEMBER_BASE_URL}/${memberId}`, { 
@@ -174,12 +193,7 @@ app.get('/', (req, res) => res.send('YVSPORT Connector is online.'));
 
 app.listen(PORT, () => {
     console.log(`Server draait op poort ${PORT}`);
-    
-    // Check-in interval (elke 30 sec)
     setInterval(pollVirtuagym, POLLING_INTERVAL_MS);
-    
-    // Retentie interval (elke dag om 10:00 uur)
     schedule.scheduleJob('0 10 * * *', runRetentionCheck);
-    
     pollVirtuagym();
 });
