@@ -11,11 +11,12 @@ const API_KEY = process.env.API_KEY;
 const CLUB_SECRET = process.env.CLUB_SECRET;
 const HOMEY_INDIVIDUAL_URL = process.env.HOMEY_URL; 
 
-// --- NIEUWE CONFIGURATIE VOOR RETENTIE ---
+// --- RETENTIE CONFIGURATIE ---
 const RETENTION_WEBHOOK_URL = "JOUW_NIEUWE_MAKE_WEBHOOK_URL"; 
 
 const VG_VISITS_BASE_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/visits`;
 const VG_MEMBER_BASE_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/member`; 
+const VG_MEMBERSHIP_DEF_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/membership/definition`;
 
 const CONTRACT_EXPIRY_THRESHOLD_MS = 4 * 7 * 24 * 60 * 60 * 1000; 
 const EXCLUDED_MEMBERSHIP_NAMES = ["Premium Flex", "Student Flex"];
@@ -31,61 +32,70 @@ let virtuagymStatus = {
     error: null 
 };
 
-// --- NIEUWE RETENTIE FUNCTIE (V6.0) ---
+// --- RETENTIE FUNCTIE (v7.0 - BREDE SCAN) ---
 async function runRetentionCheck() {
-    console.log("[RETENTIE] Start controle v6.0...");
+    console.log("[RETENTIE] Start brede controle op inactieve leden...");
     const drieMaandenInMs = 90 * 24 * 60 * 60 * 1000;
     const grensDatum = Date.now() - drieMaandenInMs;
 
     try {
-        // 1. Haal eerst de definities op om de ID's van Focus/Complete te vinden
-        const defRes = await axios.get(`https://api.virtuagym.com/api/v1/club/${CLUB_ID}/membership/definition`, {
-            params: { api_key: API_KEY, club_secret: CLUB_SECRET, status: 'active' }
+        // 1. Haal ALLE lidmaatschapdefinities op (ook gearchiveerde)
+        console.log("[RETENTIE] Definities ophalen (status: all)...");
+        const defRes = await axios.get(VG_MEMBERSHIP_DEF_URL, {
+            params: { api_key: API_KEY, club_secret: CLUB_SECRET, status: 'all' }
         });
 
         const targetIds = (defRes.data.result || [])
             .filter(d => {
                 const name = (d.membership_name || "").toLowerCase();
+                // Filter op trefwoorden, negeer Flex
                 return (name.includes("focus") || name.includes("complete")) && !name.includes("flex");
             })
             .map(d => d.membership_id);
 
-        console.log(`[RETENTIE] Doel-ID's gevonden op basis van namen: ${targetIds.join(', ')}`);
+        console.log(`[RETENTIE] ${targetIds.length} Target ID's gevonden: ${targetIds.join(', ')}`);
 
         if (targetIds.length === 0) {
-            console.log("[RETENTIE] Geen passende abonnementen gevonden. Scan gestopt.");
+            console.log("[RETENTIE] Geen abonnementen gevonden met 'Focus' of 'Complete'. Scan gestopt.");
             return;
         }
 
-        // 2. Haal alle leden op via paging
+        // 2. Haal alle leden op (Paging voor > 500 leden)
         let allMembers = [];
         let page = 0;
         let hasMore = true;
 
         while (hasMore) {
+            console.log(`[RETENTIE] Leden ophalen pagina ${page}...`);
             const res = await axios.get(VG_MEMBER_BASE_URL, {
                 params: { api_key: API_KEY, club_secret: CLUB_SECRET, with: 'active_memberships', page: page }
             });
             const results = res.data.result || [];
             allMembers = allMembers.concat(results);
+            
             if (results.length < 500) hasMore = false;
             else page++;
-            if (page > 10) hasMore = false; // Veiligheid
+            if (page > 15) hasMore = false; // Veiligheidsstop voor zeer grote databases
         }
 
         console.log(`[RETENTIE] Analyse van ${allMembers.length} leden gestart...`);
         let foundCount = 0;
 
         for (const m of allMembers) {
+            // Alleen actieve leden bekijken
             if (m.active !== 1) continue;
 
             const lastVisitTs = m.last_visit ? new Date(m.last_visit).getTime() : 0;
+            
+            // Is het lid 90 dagen niet geweest (of nooit)?
             if (lastVisitTs === 0 || lastVisitTs < grensDatum) {
                 
                 const memberships = m.memberships || [];
+                // Check of een van de lidmaatschappen van dit lid voorkomt in onze target-lijst
                 const hasMatch = memberships.some(ms => ms.active === 1 && targetIds.includes(ms.membership_id));
 
                 if (hasMatch) {
+                    // Telefoonnummer opschonen
                     let rawPhone = m.mobile || m.phone || "";
                     let cleanPhone = rawPhone.replace(/\D/g, ''); 
                     if (cleanPhone.startsWith('06')) cleanPhone = '31' + cleanPhone.substring(1);
@@ -101,14 +111,14 @@ async function runRetentionCheck() {
                             phone: cleanPhone,
                             last_visit: m.last_visit || "Nooit"
                         }).catch(() => {});
-                        console.log(`[RETENTIE] MATCH: ${m.firstname} (ID: ${m.member_id}) -> Make`);
+                        console.log(`[RETENTIE] MATCH: ${m.firstname} (Lid-ID: ${m.member_id}) -> Make`);
                     }
                 }
             }
         }
-        console.log(`[RETENTIE] Klaar. ${foundCount} leden doorgegeven.`);
+        console.log(`[RETENTIE] Scan voltooid. ${foundCount} leden naar Make gestuurd.`);
     } catch (e) {
-        console.error("[RETENTIE] Fout:", e.message);
+        console.error("[RETENTIE] Kritieke fout:", e.message);
     }
 }
 
@@ -202,12 +212,7 @@ app.get('/', (req, res) => res.send('YVSPORT Connector is online.'));
 
 app.listen(PORT, () => {
     console.log(`Server draait op poort ${PORT}`);
-    
-    // Check-in interval (elke 30 sec)
     setInterval(pollVirtuagym, POLLING_INTERVAL_MS);
-    
-    // Retentie interval (elke dag om 10:00 uur)
     schedule.scheduleJob('0 10 * * *', runRetentionCheck);
-    
     pollVirtuagym();
 });
