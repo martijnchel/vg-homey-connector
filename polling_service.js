@@ -11,7 +11,7 @@ const API_KEY = process.env.API_KEY;
 const CLUB_SECRET = process.env.CLUB_SECRET;
 const HOMEY_INDIVIDUAL_URL = process.env.HOMEY_URL; 
 
-// --- RETENTIE CONFIGURATIE ---
+// --- NIEUWE CONFIGURATIE VOOR RETENTIE ---
 const RETENTION_WEBHOOK_URL = "JOUW_NIEUWE_MAKE_WEBHOOK_URL"; 
 
 const VG_VISITS_BASE_URL = `https://api.virtuagym.com/api/v1/club/${CLUB_ID}/visits`;
@@ -31,53 +31,61 @@ let virtuagymStatus = {
     error: null 
 };
 
-// --- NIEUWE RETENTIE LOGICA MET PAGING & WILDCARDS ---
+// --- NIEUWE RETENTIE FUNCTIE (V6.0) ---
 async function runRetentionCheck() {
-    console.log("[RETENTIE] Start grondige controle...");
+    console.log("[RETENTIE] Start controle v6.0...");
     const drieMaandenInMs = 90 * 24 * 60 * 60 * 1000;
     const grensDatum = Date.now() - drieMaandenInMs;
 
     try {
+        // 1. Haal eerst de definities op om de ID's van Focus/Complete te vinden
+        const defRes = await axios.get(`https://api.virtuagym.com/api/v1/club/${CLUB_ID}/membership/definition`, {
+            params: { api_key: API_KEY, club_secret: CLUB_SECRET, status: 'active' }
+        });
+
+        const targetIds = (defRes.data.result || [])
+            .filter(d => {
+                const name = (d.membership_name || "").toLowerCase();
+                return (name.includes("focus") || name.includes("complete")) && !name.includes("flex");
+            })
+            .map(d => d.membership_id);
+
+        console.log(`[RETENTIE] Doel-ID's gevonden op basis van namen: ${targetIds.join(', ')}`);
+
+        if (targetIds.length === 0) {
+            console.log("[RETENTIE] Geen passende abonnementen gevonden. Scan gestopt.");
+            return;
+        }
+
+        // 2. Haal alle leden op via paging
         let allMembers = [];
         let page = 0;
         let hasMore = true;
 
-        // 1. Haal ALLE leden op (Paging)
         while (hasMore) {
-            console.log(`[RETENTIE] Ophalen pagina ${page}...`);
             const res = await axios.get(VG_MEMBER_BASE_URL, {
                 params: { api_key: API_KEY, club_secret: CLUB_SECRET, with: 'active_memberships', page: page }
             });
             const results = res.data.result || [];
             allMembers = allMembers.concat(results);
-            
             if (results.length < 500) hasMore = false;
             else page++;
-            
-            if (page > 10) hasMore = false; // Veiligheidsstop
+            if (page > 10) hasMore = false; // Veiligheid
         }
 
-        console.log(`[RETENTIE] Totaal ${allMembers.length} leden geladen. Start analyse...`);
+        console.log(`[RETENTIE] Analyse van ${allMembers.length} leden gestart...`);
         let foundCount = 0;
 
         for (const m of allMembers) {
             if (m.active !== 1) continue;
 
-            // Check datum
-            let lastVisitTs = m.last_visit ? new Date(m.last_visit).getTime() : 0;
-            const isInactief = (lastVisitTs === 0 || lastVisitTs < grensDatum);
-
-            if (isInactief) {
-                const memberships = m.memberships || [];
+            const lastVisitTs = m.last_visit ? new Date(m.last_visit).getTime() : 0;
+            if (lastVisitTs === 0 || lastVisitTs < grensDatum) {
                 
-                // 2. Filter op woorden "Complete" of "Focus" (Wildcard)
-                const isTarget = memberships.some(ms => {
-                    if (ms.active !== 1) return false;
-                    const name = (ms.membership_name || "").toLowerCase();
-                    return (name.includes("complete") || name.includes("focus")) && !name.includes("flex");
-                });
+                const memberships = m.memberships || [];
+                const hasMatch = memberships.some(ms => ms.active === 1 && targetIds.includes(ms.membership_id));
 
-                if (isTarget) {
+                if (hasMatch) {
                     let rawPhone = m.mobile || m.phone || "";
                     let cleanPhone = rawPhone.replace(/\D/g, ''); 
                     if (cleanPhone.startsWith('06')) cleanPhone = '31' + cleanPhone.substring(1);
@@ -92,21 +100,19 @@ async function runRetentionCheck() {
                             firstname: m.firstname,
                             phone: cleanPhone,
                             last_visit: m.last_visit || "Nooit"
-                        }).catch(e => {});
-                        console.log(`[RETENTIE] MATCH: ${m.firstname} | Tel: ${cleanPhone} | Lidmaatschap: ${memberships.map(x => x.membership_name).join(', ')}`);
+                        }).catch(() => {});
+                        console.log(`[RETENTIE] MATCH: ${m.firstname} (ID: ${m.member_id}) -> Make`);
                     }
                 }
             }
         }
-        console.log(`[RETENTIE] Klaar. ${foundCount} leden naar Make gestuurd.`);
+        console.log(`[RETENTIE] Klaar. ${foundCount} leden doorgegeven.`);
     } catch (e) {
         console.error("[RETENTIE] Fout:", e.message);
     }
 }
 
-// --- REST VAN JE CODE (Check-ins, etc.) ---
-// (Blijft exact hetzelfde als voorheen)
-
+// --- ORIGINELE CHECK-IN LOGICA (ONGEWIJZIGD) ---
 async function getEnhancedMemberData(memberId) {
     try {
         const res = await axios.get(`${VG_MEMBER_BASE_URL}/${memberId}`, { 
@@ -115,9 +121,11 @@ async function getEnhancedMemberData(memberId) {
         let data = res.data.result;
         if (Array.isArray(data)) data = data[0];
         if (!data) return { name: `Lid ${memberId}`, codes: "" };
+
         let codes = { B: "", E: "", N: "" };
         const nu = new Date();
         const fullName = `${data.firstname} ${data.lastname || ''}`.trim();
+
         if (data.birthday) {
             const bday = new Date(data.birthday);
             if (bday.getDate() === nu.getDate() && bday.getMonth() === nu.getMonth()) codes.B = "[B]";
@@ -146,41 +154,60 @@ async function pollVirtuagym() {
             params: { api_key: API_KEY, club_secret: CLUB_SECRET, sync_from: latestCheckinTimestamp },
             timeout: 15000 
         });
+
         errorCount = 0; 
         virtuagymStatus.online = true;
         virtuagymStatus.lastUpdate = new Date().toISOString();
         virtuagymStatus.error = null;
+
         const visits = (response.data.result || [])
             .filter(v => v.check_in_timestamp > latestCheckinTimestamp)
             .sort((a, b) => a.check_in_timestamp - b.check_in_timestamp);
+
         for (const visit of visits) {
             const memberInfo = await getEnhancedMemberData(visit.member_id);
-            const time = new Date(visit.check_in_timestamp).toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Amsterdam' });
+            const time = new Date(visit.check_in_timestamp).toLocaleTimeString('nl-NL', { 
+                hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Amsterdam' 
+            });
+
             let errorPrefix = visit.status === "rejected" ? "[X]" : "";
             const tagValue = `${errorPrefix}${memberInfo.codes}${time} - ${memberInfo.name}`;
+
             if (HOMEY_INDIVIDUAL_URL) {
                 await new Promise(resolve => setTimeout(resolve, 500)); 
                 await axios.get(`${HOMEY_INDIVIDUAL_URL}?tag=${encodeURIComponent(tagValue)}`);
-                console.log(`[RAILWAY] Scan: ${memberInfo.name}`);
+                console.log(`[RAILWAY] Scan: ${memberInfo.name} | Status: ${visit.status}`);
             }
             latestCheckinTimestamp = visit.check_in_timestamp;
         }
     } catch (e) { 
         console.error(`Poll fout: ${e.message}`); 
+        if (!e.response || e.response.status >= 500) {
+            errorCount++;
+            if (errorCount >= MAX_ERROR_THRESHOLD) virtuagymStatus.online = false;
+        }
     }
     isPolling = false;
 }
 
+// --- ENDPOINTS ---
 app.get('/gate-status', (req, res) => res.json(virtuagymStatus));
+
 app.get('/test-retention', async (req, res) => {
     runRetentionCheck();
-    res.send("Retentie scan gestart. Check de logs!");
+    res.send("Retentie scan handmatig gestart. Check de Railway logs!");
 });
+
 app.get('/', (req, res) => res.send('YVSPORT Connector is online.'));
 
 app.listen(PORT, () => {
     console.log(`Server draait op poort ${PORT}`);
+    
+    // Check-in interval (elke 30 sec)
     setInterval(pollVirtuagym, POLLING_INTERVAL_MS);
+    
+    // Retentie interval (elke dag om 10:00 uur)
     schedule.scheduleJob('0 10 * * *', runRetentionCheck);
+    
     pollVirtuagym();
 });
